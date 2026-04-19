@@ -1,0 +1,11 @@
+[Unit]
+Description=petascale — backup to TrueNAS via SMB
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/petascale/infra/systemd/petascale-backup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=petascale-backup

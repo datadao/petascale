@@ -427,15 +427,17 @@ dependencies = [
     { name = "aiohttp" },
     { name = "aiomqtt" },
     { name = "aiosqlite" },
-    { name = "duckdb" },
-    { name = "plotly" },
     { name = "pydantic" },
     { name = "python-dotenv" },
-    { name = "pytz" },
     { name = "structlog" },
 ]
 
 [package.optional-dependencies]
+analytics = [
+    { name = "duckdb" },
+    { name = "plotly" },
+    { name = "pytz" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -446,16 +448,16 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "aiomqtt", specifier = ">=2.0.0" },
     { name = "aiosqlite", specifier = ">=0.19.0" },
-    { name = "duckdb", specifier = ">=1.5.2" },
-    { name = "plotly", specifier = ">=6.7.0" },
+    { name = "duckdb", marker = "extra == 'analytics'", specifier = ">=1.5.2" },
+    { name = "plotly", marker = "extra == 'analytics'", specifier = ">=6.7.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "pytz", specifier = ">=2026.1.post1" },
+    { name = "pytz", marker = "extra == 'analytics'", specifier = ">=2026.1.post1" },
     { name = "structlog", specifier = ">=23.0.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["analytics", "dev"]
 
 [[package]]
 name = "plotly"
