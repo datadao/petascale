@@ -1,0 +1,13 @@
+# petascale sensor configuration
+
+[thresholds]
+# Global weight thresholds for presence detection (grams)
+enter_g            = 300
+exit_g             = 100
+stability_window_s = 5
+
+[[sensors]]
+id        = "sensor14/cat_weight_sensor"
+ha_entity = "sensor.sensor14_cat_weight_sensor"
+name      = "Litter box"
+role      = "litterbox"   # litterbox | food | water | scale

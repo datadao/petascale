@@ -1,0 +1,45 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.env.local
+
+# SQLite
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Private notes and local-only files
+.private/
+
+# Generated output
+dashboard.html
+
+# Data (never commit raw sensor dumps or exports)
+data/
+archive/
+*.parquet

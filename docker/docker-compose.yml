@@ -1,0 +1,20 @@
+services:
+  daemon:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: petascale-daemon
+    container_name: petascale-daemon
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      DB_PATH: /data/petascale.db
+    volumes:
+      # SQLite on host local SSD — path set in Proxmox LXC
+      - /data/petascale:/data
+      # Config hot-reload: change sensors.toml, restart container
+      - ../config:/app/config:ro
+    logging:
+      driver: journald
+      options:
+        tag: petascale
