@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import logging
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -29,13 +30,21 @@ def _attach_sources(con: duckdb.DuckDBPyConnection, db_path: str, archive_dir: P
 
     if parquet_files:
         globs = str(archive_dir / "*.parquet")
+        # SQLite has backfill overlap with Parquet — only take SQLite rows
+        # from the day after the newest Parquet file to avoid double-counting.
+        newest_day = date.fromisoformat(parquet_files[-1].stem)
+        sqlite_from_ms = int(
+            datetime(newest_day.year, newest_day.month, newest_day.day,
+                     tzinfo=timezone.utc).timestamp() * 1000
+        ) + 86_400_000
         con.execute(f"""
             CREATE VIEW all_measurements AS
-            SELECT * FROM sqlite.raw_measurements
+            SELECT * FROM sqlite.raw_measurements WHERE timestamp >= {sqlite_from_ms}
             UNION ALL
             SELECT * FROM read_parquet('{globs}')
         """)
-        log.info("using SQLite + %d Parquet file(s)", len(parquet_files))
+        log.info("using SQLite (from %s) + %d Parquet file(s)",
+                 newest_day + timedelta(days=1), len(parquet_files))
     else:
         con.execute("CREATE VIEW all_measurements AS SELECT * FROM sqlite.raw_measurements")
         log.info("using SQLite only (no Parquet archive yet)")
