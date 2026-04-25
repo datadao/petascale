@@ -20,9 +20,14 @@ _DB_DEFAULT = "/data/petascale.db"
 
 
 def export_day(con: duckdb.DuckDBPyConnection, day: date, out_dir: Path) -> int:
-    """Export one calendar day to a Parquet file. Returns row count."""
+    """Export one calendar day to a Parquet file. Returns row count.
+
+    Writes to a .tmp file first, then renames atomically — safe against
+    partial writes and won't destroy an existing file if there's no data.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"{day}.parquet"
+    tmp = out_dir / f"{day}.parquet.tmp"
 
     start_ms = int(date.fromisoformat(str(day)).strftime("%s")) * 1000
     end_ms = start_ms + 86_400_000
@@ -35,14 +40,21 @@ def export_day(con: duckdb.DuckDBPyConnection, day: date, out_dir: Path) -> int:
     if count == 0:
         return 0
 
-    con.execute(f"""
-        COPY (
-            SELECT *
-            FROM sqlite.raw_measurements
-            WHERE timestamp >= {start_ms} AND timestamp < {end_ms}
-            ORDER BY timestamp
-        ) TO '{dest}' (FORMAT parquet, COMPRESSION zstd)
-    """)
+    tmp.unlink(missing_ok=True)
+    try:
+        con.execute(f"""
+            COPY (
+                SELECT *
+                FROM sqlite.raw_measurements
+                WHERE timestamp >= {start_ms} AND timestamp < {end_ms}
+                ORDER BY timestamp
+            ) TO '{tmp}' (FORMAT parquet, COMPRESSION zstd)
+        """)
+        tmp.rename(dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
     return count
 
 
@@ -52,11 +64,12 @@ def run(db_path: str, out_dir: Path, days_back: int = 1) -> None:
     con.execute(f"ATTACH '{db_path}' AS sqlite (TYPE sqlite, READ_ONLY)")
 
     today = date.today()
+    yesterday = today - timedelta(days=1)
     exported = 0
     for i in range(days_back, 0, -1):
         day = today - timedelta(days=i)
         dest = out_dir / f"{day}.parquet"
-        if dest.exists():
+        if dest.exists() and day < yesterday:
             log.debug("skip %s — already exported", day)
             continue
         count = export_day(con, day, out_dir)

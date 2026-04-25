@@ -46,6 +46,7 @@ No homelab required.
 - [x] `src/petascale/cold/aggregator.py` — exports daily Parquet, skips existing files
 - [ ] Parquet files backed up to TrueNAS SMB share nightly
 - [ ] DuckDB query examples for ad-hoc analysis
+- [ ] Parquet consistency check: verify each file covers a full day (expected row count vs actual, first/last timestamp, no gaps > N minutes)
 
 ---
 
@@ -54,6 +55,7 @@ No homelab required.
 - [x] Plotly dashboard served via nginx on port 8080 (regenerates every 5 min)
 - [x] Dashboard reads SQLite directly + Parquet archive (unified DuckDB view)
 - [x] Per-sensor weight traces (multi-sensor aware)
+- [x] nginx index fix — dashboard.html served as root
 - [ ] Event timeline chart (cat_present / cat_left events)
 - [ ] HA Lovelace card integration via MQTT entities
 - [ ] Evidence.dev site (future, heavier but richer)
