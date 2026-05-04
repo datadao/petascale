@@ -300,7 +300,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
             "Data density — readings per hour (all time)",
             "Raw weight — last 24 hours",
         ],
-        vertical_spacing=0.08,
+        vertical_spacing=0.06,
     )
 
     # Row 1: per-cat potty weight scatter (kg) over last 30 days
@@ -317,11 +317,10 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                     marker=dict(color=_CAT_COLORS[i % len(_CAT_COLORS)], size=7,
                                 line=dict(width=0)),
                     hovertemplate=f"{name} %{{x|%Y-%m-%d %H:%M}}: %{{y:.2f}} kg<extra></extra>",
-                    legendgroup="cats",
                 ),
                 row=1, col=1,
             )
-        fig.update_yaxes(title_text="weight (kg)", row=1, col=1)
+        fig.update_yaxes(title_text="kg", row=1, col=1)
 
     # Row 2: daily event count bars
     if daily_counts:
@@ -336,13 +335,12 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                     y=[p[1] for p in pts],
                     name=label,
                     marker_color=color,
-                    legendgroup="counts",
                 ),
                 row=2, col=1,
             )
-        fig.update_yaxes(title_text="count/day", row=2, col=1)
+        fig.update_yaxes(title_text="count", row=2, col=1)
 
-    # Row 3: data density heatmap (all time)
+    # Row 3: data density heatmap (all time) — no legend entry needed
     if history:
         days  = sorted({str(r[0].date()) for r in history})
         hours = list(range(24))
@@ -355,12 +353,13 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                 colorscale=[[0, "#ebedf0"], [0.01, "#9be9a8"], [0.25, "#40c463"],
                             [0.6, "#30a14e"], [1, "#216e39"]],
                 showscale=False,
+                showlegend=False,
                 hovertemplate="%{x} %{y}: %{z} readings<extra></extra>",
             ),
             row=3, col=1,
         )
 
-    # Row 4: raw weight last 24h
+    # Row 4: raw weight last 24h — sensor ID in hover, not legend
     if weight_24h:
         sensors = sorted({r[1] for r in weight_24h})
         for i, sid in enumerate(sensors):
@@ -371,13 +370,13 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                     y=[p[1] for p in pts],
                     mode="lines",
                     name=sid,
+                    showlegend=False,
                     line=dict(color=_CAT_COLORS[i % len(_CAT_COLORS)], width=1),
                     hovertemplate=f"{sid} %{{x|%H:%M:%S}}: %{{y:.0f}}g<extra></extra>",
-                    legendgroup="raw",
                 ),
                 row=4, col=1,
             )
-        fig.update_yaxes(title_text="grams", row=4, col=1)
+        fig.update_yaxes(title_text="g", row=4, col=1)
 
     fig.update_layout(
         title=dict(
@@ -385,19 +384,30 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                 f"petascale — {total_readings:,} readings · {n_sensors} sensor(s) · {n_events} events<br>"
                 f"<sup>{oldest}  →  {newest}</sup>"
             ),
-            font_size=16,
+            font_size=15,
             font_color="#1f2328",
         ),
         paper_bgcolor="#ffffff",
         plot_bgcolor="#ffffff",
         font_color="#1f2328",
-        margin=dict(t=90, b=30, l=55, r=16),
+        margin=dict(t=85, b=70, l=50, r=16),
+        height=1280,
         autosize=True,
-        legend=dict(bgcolor="#f6f8fa", bordercolor="#d0d7de", borderwidth=1),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.055,
+            xanchor="center",
+            x=0.5,
+            bgcolor="#f6f8fa",
+            bordercolor="#d0d7de",
+            borderwidth=1,
+            font_size=12,
+        ),
         barmode="stack",
     )
     fig.update_xaxes(showgrid=False, tickfont_size=10)
-    fig.update_yaxes(showgrid=True, gridcolor="#d0d7de")
+    fig.update_yaxes(showgrid=True, gridcolor="#d0d7de", title_font_size=11)
 
     fig_html = fig.to_html(
         full_html=False,
