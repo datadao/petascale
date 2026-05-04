@@ -26,7 +26,7 @@ _DB_DEFAULT = "/data/petascale.db"
 _ARCHIVE_DEFAULT = "/data/archive"
 _OUT_DEFAULT = "/data/dashboard.html"
 
-_CAT_COLORS = ["#26a641", "#58a6ff", "#f78166", "#d2a8ff", "#ffa657", "#a5d6ff"]
+_CAT_COLORS = ["#2da44e", "#0969da", "#cf222e", "#8250df", "#bc4c00", "#1b7f37"]
 
 
 _AVATAR_PROD_DIR = Path("/data/avatars")
@@ -142,9 +142,10 @@ def _build_cats_header(
 
 
 _PAGE_CSS = """
+*, *::before, *::after { box-sizing: border-box; }
 body {
-  background: #0d1117;
-  color: #c9d1d9;
+  background: #f6f8fa;
+  color: #1f2328;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   margin: 0;
   padding: 0;
@@ -152,37 +153,43 @@ body {
 .cats-header {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
-  padding: 18px 24px;
-  border-bottom: 1px solid #21262d;
-  background: #0d1117;
+  gap: 20px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #d0d7de;
+  background: #ffffff;
 }
 .cat-card {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
 }
 .cat-card img,
 .cat-card .avatar-fallback {
-  width: 64px;
-  height: 64px;
+  width: 60px;
+  height: 60px;
   border-radius: 50%;
   object-fit: cover;
-  border: 2px solid #30363d;
+  border: 2px solid #d0d7de;
   flex-shrink: 0;
 }
 .cat-card .avatar-fallback {
-  background: #161b22;
-  color: #58a6ff;
-  font-size: 28px;
+  background: #eaf5ff;
+  color: #0969da;
+  font-size: 26px;
   font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.cat-card .info { font-size: 13px; line-height: 1.45; }
-.cat-card .name { font-weight: 600; font-size: 15px; color: #e6edf3; }
-.cat-card .stat { color: #8b949e; }
+.cat-card .info { font-size: 13px; line-height: 1.5; }
+.cat-card .name { font-weight: 600; font-size: 15px; color: #1f2328; }
+.cat-card .stat { color: #57606a; }
+@media (max-width: 480px) {
+  .cats-header { gap: 14px; padding: 12px 14px; }
+  .cat-card img, .cat-card .avatar-fallback { width: 48px; height: 48px; font-size: 20px; }
+  .cat-card .info { font-size: 12px; }
+  .cat-card .name { font-size: 14px; }
+}
 """
 
 
@@ -286,54 +293,17 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
 
     fig = make_subplots(
         rows=4, cols=1,
-        row_heights=[0.20, 0.30, 0.28, 0.22],
+        row_heights=[0.30, 0.22, 0.20, 0.28],
         subplot_titles=[
-            "Data density — readings per hour (all time)",
-            "Raw weight — last 24 hours",
             "Potty weight by cat — last 30 days",
             "Daily event counts — last 30 days",
+            "Data density — readings per hour (all time)",
+            "Raw weight — last 24 hours",
         ],
         vertical_spacing=0.08,
     )
 
-    # Row 1: data density heatmap
-    if history:
-        days  = sorted({str(r[0].date()) for r in history})
-        hours = list(range(24))
-        grid  = {(str(r[0].date()), int(r[1])): r[2] for r in history}
-        z     = [[grid.get((d, h), 0) for d in days] for h in hours]
-
-        fig.add_trace(
-            go.Heatmap(
-                z=z, x=days, y=[f"{h:02d}:00" for h in hours],
-                colorscale=[[0, "#161b22"], [0.01, "#0e4429"], [0.25, "#006d32"],
-                            [0.6, "#26a641"], [1, "#39d353"]],
-                showscale=False,
-                hovertemplate="%{x} %{y}: %{z} readings<extra></extra>",
-            ),
-            row=1, col=1,
-        )
-
-    # Row 2: raw weight last 24h
-    if weight_24h:
-        sensors = sorted({r[1] for r in weight_24h})
-        for i, sid in enumerate(sensors):
-            pts = [(r[0], r[2]) for r in weight_24h if r[1] == sid]
-            fig.add_trace(
-                go.Scatter(
-                    x=[p[0] for p in pts],
-                    y=[p[1] for p in pts],
-                    mode="lines",
-                    name=sid,
-                    line=dict(color=_CAT_COLORS[i % len(_CAT_COLORS)], width=1),
-                    hovertemplate=f"{sid} %{{x|%H:%M:%S}}: %{{y:.0f}}g<extra></extra>",
-                    legendgroup="raw",
-                ),
-                row=2, col=1,
-            )
-        fig.update_yaxes(title_text="grams", row=2, col=1)
-
-    # Row 3: per-cat potty weight scatter (kg) over last 30 days
+    # Row 1: per-cat potty weight scatter (kg) over last 30 days
     if cat_weights:
         cats = sorted({r[1] for r in cat_weights})
         for i, name in enumerate(cats):
@@ -349,17 +319,16 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                     hovertemplate=f"{name} %{{x|%Y-%m-%d %H:%M}}: %{{y:.2f}} kg<extra></extra>",
                     legendgroup="cats",
                 ),
-                row=3, col=1,
+                row=1, col=1,
             )
-        fig.update_yaxes(title_text="weight (kg)", row=3, col=1)
+        fig.update_yaxes(title_text="weight (kg)", row=1, col=1)
 
-    # Row 4: daily event count bars
+    # Row 2: daily event count bars
     if daily_counts:
-        # Group by series (cat name or '_cleaning')
         series_set = sorted({r[2] for r in daily_counts})
         for i, ser in enumerate(series_set):
             label = "cleaning" if ser == "_cleaning" else f"{ser} potty"
-            color = "#a371f7" if ser == "_cleaning" else _CAT_COLORS[i % len(_CAT_COLORS)]
+            color = "#8250df" if ser == "_cleaning" else _CAT_COLORS[i % len(_CAT_COLORS)]
             pts = [(r[0], r[3]) for r in daily_counts if r[2] == ser]
             fig.add_trace(
                 go.Bar(
@@ -369,9 +338,46 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                     marker_color=color,
                     legendgroup="counts",
                 ),
+                row=2, col=1,
+            )
+        fig.update_yaxes(title_text="count/day", row=2, col=1)
+
+    # Row 3: data density heatmap (all time)
+    if history:
+        days  = sorted({str(r[0].date()) for r in history})
+        hours = list(range(24))
+        grid  = {(str(r[0].date()), int(r[1])): r[2] for r in history}
+        z     = [[grid.get((d, h), 0) for d in days] for h in hours]
+
+        fig.add_trace(
+            go.Heatmap(
+                z=z, x=days, y=[f"{h:02d}:00" for h in hours],
+                colorscale=[[0, "#ebedf0"], [0.01, "#9be9a8"], [0.25, "#40c463"],
+                            [0.6, "#30a14e"], [1, "#216e39"]],
+                showscale=False,
+                hovertemplate="%{x} %{y}: %{z} readings<extra></extra>",
+            ),
+            row=3, col=1,
+        )
+
+    # Row 4: raw weight last 24h
+    if weight_24h:
+        sensors = sorted({r[1] for r in weight_24h})
+        for i, sid in enumerate(sensors):
+            pts = [(r[0], r[2]) for r in weight_24h if r[1] == sid]
+            fig.add_trace(
+                go.Scatter(
+                    x=[p[0] for p in pts],
+                    y=[p[1] for p in pts],
+                    mode="lines",
+                    name=sid,
+                    line=dict(color=_CAT_COLORS[i % len(_CAT_COLORS)], width=1),
+                    hovertemplate=f"{sid} %{{x|%H:%M:%S}}: %{{y:.0f}}g<extra></extra>",
+                    legendgroup="raw",
+                ),
                 row=4, col=1,
             )
-        fig.update_yaxes(title_text="count/day", row=4, col=1)
+        fig.update_yaxes(title_text="grams", row=4, col=1)
 
     fig.update_layout(
         title=dict(
@@ -380,23 +386,29 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                 f"<sup>{oldest}  →  {newest}</sup>"
             ),
             font_size=16,
+            font_color="#1f2328",
         ),
-        paper_bgcolor="#0d1117",
-        plot_bgcolor="#0d1117",
-        font_color="#c9d1d9",
-        margin=dict(t=100, b=40, l=60, r=20),
-        height=1100,
-        legend=dict(bgcolor="#161b22", bordercolor="#30363d", borderwidth=1),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font_color="#1f2328",
+        margin=dict(t=90, b=30, l=55, r=16),
+        autosize=True,
+        legend=dict(bgcolor="#f6f8fa", bordercolor="#d0d7de", borderwidth=1),
         barmode="stack",
     )
     fig.update_xaxes(showgrid=False, tickfont_size=10)
-    fig.update_yaxes(showgrid=True, gridcolor="#21262d")
+    fig.update_yaxes(showgrid=True, gridcolor="#d0d7de")
 
-    fig_html = fig.to_html(full_html=False, include_plotlyjs="cdn")
+    fig_html = fig.to_html(
+        full_html=False,
+        include_plotlyjs="cdn",
+        config={"responsive": True},
+    )
     page = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>petascale</title>
   <style>{_PAGE_CSS}</style>
 </head>
