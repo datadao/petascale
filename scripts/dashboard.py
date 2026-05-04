@@ -69,18 +69,25 @@ def _avatar_data_uri(path: str | None) -> str | None:
     return f"data:{mime};base64,{encoded}"
 
 
+def _ago(delta_ms: float | None) -> str:
+    if not delta_ms:
+        return ""
+    h = int(delta_ms) // 3_600_000
+    m = (int(delta_ms) % 3_600_000) // 60_000
+    return f"{h}h {m:02d}m ago"
+
+
 def _build_cats_header(
     con: duckdb.DuckDBPyConnection,
     cats: list[CatProfile],
     tz: str,
 ) -> str:
-    """Render the cat-cards strip (avatar + name + stats + last cleaning)."""
+    """Render the cat-cards strip (avatar + name + weight stats + last-seen ago)."""
     if not cats:
         return ""
 
-    # Per cat: most recent day avg weight (local tz) + last seen timestamp.
     stats = {
-        row[0]: (row[1], row[2], row[3])
+        row[0]: (row[1], row[2], row[3], row[4])
         for row in con.execute(f"""
             WITH daily AS (
                 SELECT cat,
@@ -102,33 +109,21 @@ def _build_cats_header(
                    (SELECT max(to_timestamp(timestamp / 1000)
                                AT TIME ZONE '{tz}')::varchar
                     FROM sqlite.events
-                    WHERE type = 'potty' AND cat = ld.cat) AS last_seen
+                    WHERE type = 'potty' AND cat = ld.cat) AS last_seen,
+                   (SELECT epoch_ms(now()) - max(timestamp)
+                    FROM sqlite.events
+                    WHERE type = 'potty' AND cat = ld.cat) AS last_seen_delta_ms
             FROM latest_day ld
             WHERE rn = 1
         """).fetchall()
     }
 
-    # Last litter-box cleaning (shared across all cats).
-    clean_row = con.execute(f"""
-        SELECT
-            max(to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}')::varchar,
-            epoch_ms(now()) - max(timestamp)
-        FROM sqlite.events
-        WHERE type = 'cleaning'
-    """).fetchone()
-    last_clean_str: str | None = None
-    last_clean_ago: str | None = None
-    if clean_row and clean_row[0]:
-        last_clean_str = clean_row[0][:16]
-        delta_ms = int(clean_row[1])
-        h = delta_ms // 3_600_000
-        m = (delta_ms % 3_600_000) // 60_000
-        last_clean_ago = f"{h}h {m:02d}m ago"
-
     cards: list[str] = []
     for cat in cats:
         avatar = _avatar_data_uri(cat.avatar_path)
-        last_day, last_day_avg_kg, last_seen = stats.get(cat.name, (None, None, None))
+        last_day, last_day_avg_kg, last_seen, last_seen_delta = stats.get(
+            cat.name, (None, None, None, None)
+        )
 
         if avatar:
             img = f'<img src="{avatar}" alt="{html.escape(cat.name)}">'
@@ -146,20 +141,14 @@ def _build_cats_header(
         else:
             avg_line = '<div class="stat">no recent visits</div>'
 
-        last_seen_line = (
-            f'<div class="stat">last seen {html.escape(last_seen[:16])}</div>'
-            if last_seen else ""
-        )
-
-        if last_clean_str:
-            clean_line = (
-                f'<div class="stat clean">'
-                f'last cleaned {html.escape(last_clean_str)}'
-                f'<span class="ago"> · {html.escape(last_clean_ago or "")}</span>'
-                f'</div>'
+        if last_seen:
+            ago = _ago(last_seen_delta)
+            last_seen_line = (
+                f'<div class="stat">last seen {html.escape(last_seen[:16])}'
+                f'<span class="ago"> · {ago}</span></div>'
             )
         else:
-            clean_line = ""
+            last_seen_line = ""
 
         cards.append(f"""
         <div class="cat-card">
@@ -168,12 +157,52 @@ def _build_cats_header(
             <div class="name">{html.escape(cat.name)}</div>
             {avg_line}
             {last_seen_line}
-            {clean_line}
           </div>
         </div>
         """)
 
     return f'<div class="cats-header">{"".join(cards)}</div>'
+
+
+def _build_sensors_strip(
+    con: duckdb.DuckDBPyConnection,
+    sensors: list,
+    tz: str,
+) -> str:
+    """Render a strip showing last-cleaned time per litterbox sensor."""
+    rows = con.execute(f"""
+        SELECT
+            sensor_id,
+            max(to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}')::varchar AS last_cleaned,
+            epoch_ms(now()) - max(timestamp) AS delta_ms
+        FROM sqlite.events
+        WHERE type = 'cleaning'
+        GROUP BY sensor_id
+        ORDER BY sensor_id
+    """).fetchall()
+
+    if not rows:
+        return ""
+
+    sensor_name = {s.id: s.name for s in sensors}
+
+    items: list[str] = []
+    for sensor_id, last_cleaned_str, delta_ms in rows:
+        friendly = html.escape(sensor_name.get(sensor_id, sensor_id))
+        if last_cleaned_str:
+            dt = html.escape(last_cleaned_str[:16])
+            ago = _ago(delta_ms)
+            stat = f'last cleaned {dt}<span class="ago"> · {ago}</span>'
+        else:
+            stat = "never cleaned"
+        items.append(
+            f'<div class="sensor-item">'
+            f'<span class="sensor-name">{friendly}</span>'
+            f'<span class="sensor-stat"> — {stat}</span>'
+            f'</div>'
+        )
+
+    return f'<div class="sensors-strip">{"".join(items)}</div>'
 
 
 _PAGE_CSS = """
@@ -219,8 +248,19 @@ body {
 .cat-card .info { font-size: 13px; line-height: 1.55; }
 .cat-card .name { font-weight: 600; font-size: 15px; color: #1f2328; }
 .cat-card .stat { color: #57606a; }
-.cat-card .stat.clean { color: #57606a; }
 .cat-card .stat .ago { color: #8250df; font-weight: 500; }
+.sensors-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 10px 20px;
+  border-bottom: 1px solid #d0d7de;
+  background: #f6f8fa;
+  font-size: 13px;
+}
+.sensor-item { color: #57606a; }
+.sensor-item .sensor-name { font-weight: 600; color: #1f2328; }
+.sensor-item .ago { color: #8250df; font-weight: 500; }
 @media (max-width: 480px) {
   .cats-header { gap: 14px; padding: 12px 14px; }
   .cat-card img, .cat-card .avatar-fallback { width: 48px; height: 48px; font-size: 20px; }
@@ -264,6 +304,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
     con = duckdb.connect()
     _attach_sources(con, db_path, Path(archive_dir))
     cats_header = _build_cats_header(con, cfg.cats, tz)
+    sensors_strip = _build_sensors_strip(con, cfg.sensors, tz)
 
     history = con.execute("""
         SELECT
@@ -554,6 +595,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
 </head>
 <body>
 {cats_header}
+{sensors_strip}
 {fig_html}
 </body>
 </html>"""
