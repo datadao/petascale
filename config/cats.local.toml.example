@@ -1,6 +1,10 @@
 # Cat profiles — copy to cats.local.toml and edit with your cats.
 # This file (cats.local.toml) is gitignored; treat names + photos as personal data.
-#
+
+# IANA timezone for your location. Sensor data is stored as UTC; this is used
+# for display only (dashboard timestamps, daily bucketing, etc.).
+timezone = "America/New_York"
+
 # Each [[cats]] entry needs:
 #   name        — display name (shown in the dashboard)
 #   weight_g    — typical body weight in grams (no recent deposit)

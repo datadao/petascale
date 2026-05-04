@@ -56,6 +56,7 @@ class AppConfig:
     sensors: list[SensorConfig] = field(default_factory=list)
     detection: dict[str, DetectionConfig] = field(default_factory=dict)
     cats: list[CatProfile] = field(default_factory=list)
+    timezone: str = "UTC"
 
 
 def load_config(
@@ -73,10 +74,12 @@ def load_config(
     }
 
     cats: list[CatProfile] = []
+    timezone = "UTC"
     if cats_path.is_file():
         with open(cats_path, "rb") as f:
             cats_raw = tomllib.load(f)
         cats = [CatProfile(**c) for c in cats_raw.get("cats", [])]
+        timezone = cats_raw.get("timezone", "UTC")
     else:
         log.warning(
             "cat profile file not found: %s — events will not be attributed "
@@ -84,4 +87,4 @@ def load_config(
             cats_path,
         )
 
-    return AppConfig(sensors=sensors, detection=detection, cats=cats)
+    return AppConfig(sensors=sensors, detection=detection, cats=cats, timezone=timezone)

@@ -11,6 +11,7 @@ import base64
 import html
 import logging
 import mimetypes
+import time as _time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,7 +28,7 @@ _ARCHIVE_DEFAULT = "/data/archive"
 _OUT_DEFAULT = "/data/dashboard.html"
 
 _CAT_COLORS = ["#2da44e", "#0969da", "#cf222e", "#8250df", "#bc4c00", "#1b7f37"]
-
+_CLEAN_COLOR = "#8250df"
 
 _AVATAR_PROD_DIR = Path("/data/avatars")
 
@@ -57,7 +58,6 @@ def _avatar_data_uri(path: str | None) -> str | None:
     if p is None:
         return None
     mime, _ = mimetypes.guess_type(p.name)
-    # Sniff to handle .png-extension files that are actually JPEGs.
     head = p.read_bytes()[:4]
     if head[:3] == b"\xff\xd8\xff":
         mime = "image/jpeg"
@@ -72,19 +72,21 @@ def _avatar_data_uri(path: str | None) -> str | None:
 def _build_cats_header(
     con: duckdb.DuckDBPyConnection,
     cats: list[CatProfile],
+    tz: str,
 ) -> str:
-    """Render the cat-cards strip (avatar + name + 30-day summary stats)."""
+    """Render the cat-cards strip (avatar + name + stats + last cleaning)."""
     if not cats:
         return ""
 
-    # Per cat: most recent day with potty events, that day's mean weight, last-seen timestamp.
+    # Per cat: most recent day avg weight (local tz) + last seen timestamp.
     stats = {
-        row[0]: (row[1], row[2], row[3])  # (last_day_iso, last_day_avg_kg, last_seen_iso)
-        for row in con.execute("""
+        row[0]: (row[1], row[2], row[3])
+        for row in con.execute(f"""
             WITH daily AS (
                 SELECT cat,
-                       date_trunc('day', to_timestamp(timestamp / 1000)) AS day,
-                       avg(weight_g) / 1000.0                            AS avg_kg
+                       date_trunc('day', to_timestamp(timestamp / 1000)
+                           AT TIME ZONE '{tz}')          AS day,
+                       avg(weight_g) / 1000.0             AS avg_kg
                 FROM sqlite.events
                 WHERE type = 'potty' AND cat IS NOT NULL
                 GROUP BY 1, 2
@@ -97,13 +99,31 @@ def _build_cats_header(
             SELECT ld.cat,
                    ld.day::varchar      AS last_day,
                    ld.avg_kg            AS last_day_avg_kg,
-                   (SELECT max(to_timestamp(timestamp / 1000))::varchar
+                   (SELECT max(to_timestamp(timestamp / 1000)
+                               AT TIME ZONE '{tz}')::varchar
                     FROM sqlite.events
                     WHERE type = 'potty' AND cat = ld.cat) AS last_seen
             FROM latest_day ld
             WHERE rn = 1
         """).fetchall()
     }
+
+    # Last litter-box cleaning (shared across all cats).
+    clean_row = con.execute(f"""
+        SELECT
+            max(to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}')::varchar,
+            epoch_ms(now()) - max(timestamp)
+        FROM sqlite.events
+        WHERE type = 'cleaning'
+    """).fetchone()
+    last_clean_str: str | None = None
+    last_clean_ago: str | None = None
+    if clean_row and clean_row[0]:
+        last_clean_str = clean_row[0][:16]
+        delta_ms = int(clean_row[1])
+        h = delta_ms // 3_600_000
+        m = (delta_ms % 3_600_000) // 60_000
+        last_clean_ago = f"{h}h {m:02d}m ago"
 
     cards: list[str] = []
     for cat in cats:
@@ -116,16 +136,30 @@ def _build_cats_header(
             initial = html.escape(cat.name[:1].upper())
             img = f'<div class="avatar-fallback">{initial}</div>'
 
-        avg_line = (
-            f'<div class="stat">{last_day_avg_kg:.2f} kg avg on {html.escape(last_day[:10])}</div>'
-            if last_day_avg_kg is not None and last_day
-            else '<div class="stat">no recent visits</div>'
-        )
+        if last_day_avg_kg is not None and last_day:
+            lbs = last_day_avg_kg * 2.20462
+            avg_line = (
+                f'<div class="stat">'
+                f'{last_day_avg_kg:.2f} kg ({lbs:.2f} lbs) avg · {html.escape(last_day[:10])}'
+                f'</div>'
+            )
+        else:
+            avg_line = '<div class="stat">no recent visits</div>'
+
         last_seen_line = (
             f'<div class="stat">last seen {html.escape(last_seen[:16])}</div>'
-            if last_seen
-            else ""
+            if last_seen else ""
         )
+
+        if last_clean_str:
+            clean_line = (
+                f'<div class="stat clean">'
+                f'last cleaned {html.escape(last_clean_str)}'
+                f'<span class="ago"> · {html.escape(last_clean_ago or "")}</span>'
+                f'</div>'
+            )
+        else:
+            clean_line = ""
 
         cards.append(f"""
         <div class="cat-card">
@@ -134,6 +168,7 @@ def _build_cats_header(
             <div class="name">{html.escape(cat.name)}</div>
             {avg_line}
             {last_seen_line}
+            {clean_line}
           </div>
         </div>
         """)
@@ -181,9 +216,11 @@ body {
   align-items: center;
   justify-content: center;
 }
-.cat-card .info { font-size: 13px; line-height: 1.5; }
+.cat-card .info { font-size: 13px; line-height: 1.55; }
 .cat-card .name { font-weight: 600; font-size: 15px; color: #1f2328; }
 .cat-card .stat { color: #57606a; }
+.cat-card .stat.clean { color: #57606a; }
+.cat-card .stat .ago { color: #8250df; font-weight: 500; }
 @media (max-width: 480px) {
   .cats-header { gap: 14px; padding: 12px 14px; }
   .cat-card img, .cat-card .avatar-fallback { width: 48px; height: 48px; font-size: 20px; }
@@ -201,8 +238,6 @@ def _attach_sources(con: duckdb.DuckDBPyConnection, db_path: str, archive_dir: P
 
     if parquet_files:
         globs = str(archive_dir / "*.parquet")
-        # SQLite has backfill overlap with Parquet — only take SQLite rows
-        # from the day after the newest Parquet file to avoid double-counting.
         newest_day = date.fromisoformat(parquet_files[-1].stem)
         sqlite_from_ms = int(
             datetime(newest_day.year, newest_day.month, newest_day.day,
@@ -225,9 +260,10 @@ def _attach_sources(con: duckdb.DuckDBPyConnection, db_path: str, archive_dir: P
 
 def build(db_path: str, archive_dir: str, out_path: str) -> None:
     cfg = load_config()
+    tz = cfg.timezone
     con = duckdb.connect()
     _attach_sources(con, db_path, Path(archive_dir))
-    cats_header = _build_cats_header(con, cfg.cats)
+    cats_header = _build_cats_header(con, cfg.cats, tz)
 
     history = con.execute("""
         SELECT
@@ -250,10 +286,10 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         ORDER BY ts
     """).fetchall()
 
-    # Per-cat potty weight history (last 30 days)
-    cat_weights = con.execute("""
+    # Per-cat potty weight (individual visits) — last 30 days, in local tz
+    cat_weights = con.execute(f"""
         SELECT
-            to_timestamp(timestamp / 1000) AS ts,
+            (to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}') AS ts,
             cat,
             weight_g
         FROM sqlite.events
@@ -263,16 +299,43 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         ORDER BY ts
     """).fetchall()
 
-    # Daily counts (potty per cat + cleanings)
-    daily_counts = con.execute("""
+    # Per-cat daily average weight — last 30 days
+    cat_daily_avg = con.execute(f"""
         SELECT
-            date_trunc('day', to_timestamp(timestamp / 1000)) AS day,
-            type,
-            COALESCE(cat, '_cleaning') AS series,
+            date_trunc('day', to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}') AS day,
+            cat,
+            avg(weight_g) / 1000.0 AS avg_kg
+        FROM sqlite.events
+        WHERE type = 'potty'
+          AND cat IS NOT NULL
+          AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
+        GROUP BY 1, 2
+        ORDER BY 1
+    """).fetchall()
+
+    # Per-cat daily potty visit count
+    daily_potty = con.execute(f"""
+        SELECT
+            date_trunc('day', to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}') AS day,
+            cat,
             count(*) AS n
         FROM sqlite.events
-        WHERE timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
-        GROUP BY 1, 2, 3
+        WHERE type = 'potty'
+          AND cat IS NOT NULL
+          AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
+        GROUP BY 1, 2
+        ORDER BY 1
+    """).fetchall()
+
+    # Daily cleaning counts
+    daily_cleaning = con.execute(f"""
+        SELECT
+            date_trunc('day', to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}') AS day,
+            count(*) AS n
+        FROM sqlite.events
+        WHERE type = 'cleaning'
+          AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
+        GROUP BY 1
         ORDER BY 1
     """).fetchall()
 
@@ -291,62 +354,125 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
 
     total_readings, n_sensors, oldest, newest = stats
 
-    fig = make_subplots(
-        rows=4, cols=1,
-        row_heights=[0.30, 0.22, 0.20, 0.28],
-        subplot_titles=[
-            "Potty weight by cat — last 30 days",
-            "Daily event counts — last 30 days",
-            "Data density — readings per hour (all time)",
-            "Raw weight — last 24 hours",
-        ],
-        vertical_spacing=0.06,
+    # Ordered cat names: config order for cats with data, then any unconfigured ones.
+    configured_names = [c.name for c in cfg.cats]
+    names_in_data = {r[1] for r in cat_weights}
+    cat_names = [n for n in configured_names if n in names_in_data]
+    cat_names += sorted(names_in_data - set(configured_names))
+    cat_color = {name: _CAT_COLORS[i % len(_CAT_COLORS)] for i, name in enumerate(cat_names)}
+
+    # Dynamic row layout: weight scatter | per-cat visit bars | cleaning | density | raw
+    n_cat_bars = len(cat_names)
+    n_rows = 1 + n_cat_bars + 1 + 1 + 1
+
+    raw_h = [0.30] + [0.13] * n_cat_bars + [0.12, 0.14, 0.22]
+    total_h = sum(raw_h)
+    row_heights = [h / total_h for h in raw_h]
+
+    subplot_titles = (
+        ["Potty weight by cat — last 30 days"]
+        + [f"{name} — daily visits" for name in cat_names]
+        + ["Litter box cleanings — last 30 days",
+           "Data density — readings per hour (all time)",
+           "Raw sensor weight — last 24 hours"]
     )
 
-    # Row 1: per-cat potty weight scatter (kg) over last 30 days
-    if cat_weights:
-        cats = sorted({r[1] for r in cat_weights})
-        for i, name in enumerate(cats):
-            pts = [(r[0], r[2] / 1000.0) for r in cat_weights if r[1] == name]
+    fig = make_subplots(
+        rows=n_rows, cols=1,
+        row_heights=row_heights,
+        subplot_titles=subplot_titles,
+        vertical_spacing=0.055,
+    )
+
+    # Row 1: scatter (individual visits) + daily avg line per cat
+    for name in cat_names:
+        color = cat_color[name]
+        pts = [(r[0], r[2] / 1000.0) for r in cat_weights if r[1] == name]
+        if not pts:
+            continue
+        lbs_vals = [p[1] * 2.20462 for p in pts]
+        fig.add_trace(
+            go.Scatter(
+                x=[p[0] for p in pts],
+                y=[p[1] for p in pts],
+                mode="markers",
+                name=name,
+                marker=dict(color=color, size=6, opacity=0.55, line=dict(width=0)),
+                customdata=[[lb] for lb in lbs_vals],
+                hovertemplate=(
+                    f"{name} %{{x|%Y-%m-%d %H:%M}}: "
+                    f"%{{y:.2f}} kg (%{{customdata[0]:.2f}} lbs)<extra></extra>"
+                ),
+            ),
+            row=1, col=1,
+        )
+        avg_pts = [(r[0], r[2]) for r in cat_daily_avg if r[1] == name]
+        if avg_pts:
+            avg_lbs = [p[1] * 2.20462 for p in avg_pts]
             fig.add_trace(
                 go.Scatter(
-                    x=[p[0] for p in pts],
-                    y=[p[1] for p in pts],
-                    mode="markers",
-                    name=name,
-                    marker=dict(color=_CAT_COLORS[i % len(_CAT_COLORS)], size=7,
-                                line=dict(width=0)),
-                    hovertemplate=f"{name} %{{x|%Y-%m-%d %H:%M}}: %{{y:.2f}} kg<extra></extra>",
+                    x=[p[0] for p in avg_pts],
+                    y=[p[1] for p in avg_pts],
+                    mode="lines+markers",
+                    name=f"{name} daily avg",
+                    showlegend=False,
+                    line=dict(color=color, width=2.5),
+                    marker=dict(color=color, size=5),
+                    customdata=[[lb] for lb in avg_lbs],
+                    hovertemplate=(
+                        f"{name} avg %{{x|%Y-%m-%d}}: "
+                        f"%{{y:.2f}} kg (%{{customdata[0]:.2f}} lbs)<extra></extra>"
+                    ),
                 ),
                 row=1, col=1,
             )
-        fig.update_yaxes(title_text="kg", row=1, col=1)
+    fig.update_yaxes(title_text="kg", row=1, col=1)
 
-    # Row 2: daily event count bars
-    if daily_counts:
-        series_set = sorted({r[2] for r in daily_counts})
-        for i, ser in enumerate(series_set):
-            label = "cleaning" if ser == "_cleaning" else f"{ser} potty"
-            color = "#8250df" if ser == "_cleaning" else _CAT_COLORS[i % len(_CAT_COLORS)]
-            pts = [(r[0], r[3]) for r in daily_counts if r[2] == ser]
+    # Rows 2…n_cat_bars+1: one bar chart per cat
+    for offset, name in enumerate(cat_names):
+        row_idx = 2 + offset
+        color = cat_color[name]
+        pts = [(r[0], r[2]) for r in daily_potty if r[1] == name]
+        if pts:
             fig.add_trace(
                 go.Bar(
                     x=[p[0] for p in pts],
                     y=[p[1] for p in pts],
-                    name=label,
+                    name=name,
+                    showlegend=False,
                     marker_color=color,
+                    hovertemplate=f"{name} %{{x|%b %d}}: %{{y}} visits<extra></extra>",
                 ),
-                row=2, col=1,
+                row=row_idx, col=1,
             )
-        fig.update_yaxes(title_text="count", row=2, col=1)
+        fig.update_yaxes(title_text="visits", row=row_idx, col=1,
+                         tick0=0, dtick=1)
 
-    # Row 3: data density heatmap (all time) — no legend entry needed
+    # Cleaning row
+    clean_row = 2 + n_cat_bars
+    if daily_cleaning:
+        pts = [(r[0], r[1]) for r in daily_cleaning]
+        fig.add_trace(
+            go.Bar(
+                x=[p[0] for p in pts],
+                y=[p[1] for p in pts],
+                name="cleaning",
+                showlegend=False,
+                marker_color=_CLEAN_COLOR,
+                hovertemplate="%{x|%b %d}: %{y} cleanings<extra></extra>",
+            ),
+            row=clean_row, col=1,
+        )
+    fig.update_yaxes(title_text="cleans", row=clean_row, col=1,
+                     tick0=0, dtick=1)
+
+    # Data density heatmap
+    density_row = clean_row + 1
     if history:
         days  = sorted({str(r[0].date()) for r in history})
         hours = list(range(24))
         grid  = {(str(r[0].date()), int(r[1])): r[2] for r in history}
         z     = [[grid.get((d, h), 0) for d in days] for h in hours]
-
         fig.add_trace(
             go.Heatmap(
                 z=z, x=days, y=[f"{h:02d}:00" for h in hours],
@@ -356,10 +482,11 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                 showlegend=False,
                 hovertemplate="%{x} %{y}: %{z} readings<extra></extra>",
             ),
-            row=3, col=1,
+            row=density_row, col=1,
         )
 
-    # Row 4: raw weight last 24h — sensor ID in hover, not legend
+    # Raw weight last 24h
+    raw_row = density_row + 1
     if weight_24h:
         sensors = sorted({r[1] for r in weight_24h})
         for i, sid in enumerate(sensors):
@@ -374,14 +501,17 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
                     line=dict(color=_CAT_COLORS[i % len(_CAT_COLORS)], width=1),
                     hovertemplate=f"{sid} %{{x|%H:%M:%S}}: %{{y:.0f}}g<extra></extra>",
                 ),
-                row=4, col=1,
+                row=raw_row, col=1,
             )
-        fig.update_yaxes(title_text="g", row=4, col=1)
+        fig.update_yaxes(title_text="g", row=raw_row, col=1)
+
+    height = 1050 + n_cat_bars * 160
 
     fig.update_layout(
         title=dict(
             text=(
-                f"petascale — {total_readings:,} readings · {n_sensors} sensor(s) · {n_events} events<br>"
+                f"petascale — {total_readings:,} readings · {n_sensors} sensor(s)"
+                f" · {n_events} events<br>"
                 f"<sup>{oldest}  →  {newest}</sup>"
             ),
             font_size=15,
@@ -390,13 +520,13 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         paper_bgcolor="#ffffff",
         plot_bgcolor="#ffffff",
         font_color="#1f2328",
-        margin=dict(t=85, b=70, l=50, r=16),
-        height=1280,
+        margin=dict(t=85, b=65, l=52, r=16),
+        height=height,
         autosize=True,
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.055,
+            y=-0.05,
             xanchor="center",
             x=0.5,
             bgcolor="#f6f8fa",
