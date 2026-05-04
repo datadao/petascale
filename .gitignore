@@ -35,6 +35,7 @@ Thumbs.db
 
 # Private notes and local-only files
 .private/
+config/*.local.toml
 
 # Generated output
 dashboard.html

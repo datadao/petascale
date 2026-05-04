@@ -1,6 +1,6 @@
 """SQLite store layer for petascale."""
 
-import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -37,17 +37,29 @@ class Store:
                 PRIMARY KEY (sensor_id, timestamp)
             )
         """)
+        # TODO(stack-decisions): events lives in SQLite for now. algo.md D18
+        # proposes DuckDB. Revisit when events grow > 1M rows or when
+        # analytical queries want to live next to the source-of-truth.
         await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS hot_events (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_type  TEXT    NOT NULL,
-                sensor_id   TEXT    NOT NULL,
-                timestamp   INTEGER NOT NULL,
-                duration_ms INTEGER,
-                metadata    TEXT,
-                created_at  INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+            CREATE TABLE IF NOT EXISTS events (
+                timestamp        INTEGER NOT NULL,
+                type             TEXT    NOT NULL,
+                sensor_id        TEXT    NOT NULL,
+                cat              TEXT,
+                weight_g         INTEGER,
+                cat_distance_g   INTEGER,
+                segment_start_ts INTEGER NOT NULL,
+                segment_end_ts   INTEGER NOT NULL,
+                created_at       INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+                PRIMARY KEY (sensor_id, timestamp, type)
             )
         """)
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_cat ON events(cat, timestamp)"
+        )
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
                 sensor_id        TEXT    PRIMARY KEY,
@@ -115,18 +127,27 @@ class Store:
         await self._conn.commit()
         return len(readings)
 
-    async def store_event(self, event: DetectedEvent) -> int:
-        cursor = await self._conn.execute(
+    async def upsert_events(self, events: list[DetectedEvent]) -> int:
+        """Insert events idempotently. Returns count attempted (DO NOTHING on conflict)."""
+        if not events:
+            return 0
+        await self._conn.executemany(
             """
-            INSERT INTO hot_events
-                (event_type, sensor_id, timestamp, duration_ms, metadata)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO events
+                (timestamp, type, sensor_id, cat, weight_g, cat_distance_g,
+                 segment_start_ts, segment_end_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (sensor_id, timestamp, type) DO NOTHING
             """,
-            (event.event_type.value, event.sensor_id, event.timestamp,
-             event.duration_ms, json.dumps(event.metadata)),
+            [
+                (e.timestamp, e.event_type.value, e.sensor_id, e.cat,
+                 e.weight_g, e.cat_distance_g,
+                 e.segment_start_ts, e.segment_end_ts)
+                for e in events
+            ],
         )
         await self._conn.commit()
-        return cursor.lastrowid
+        return len(events)
 
     async def get_checkpoint(self, sensor_id: str) -> Optional[int]:
         cursor = await self._conn.execute(
@@ -166,3 +187,24 @@ class Store:
             )
             for row in rows
         ]
+
+    async def fetch_readings_window(
+        self, sensor_id: str, since_ms: int, until_ms: int,
+    ) -> list[tuple[int, float]]:
+        """Return (timestamp_ms, value) tuples for a sensor within [since, until)."""
+        cursor = await self._conn.execute(
+            """
+            SELECT timestamp, value FROM raw_measurements
+            WHERE sensor_id = ? AND timestamp >= ? AND timestamp < ?
+            ORDER BY timestamp
+            """,
+            (sensor_id, since_ms, until_ms),
+        )
+        return [(r[0], r[1]) for r in await cursor.fetchall()]
+
+
+def datetime_to_ms(dt: datetime) -> int:
+    """Convert a UTC datetime to Unix epoch milliseconds."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)

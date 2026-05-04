@@ -1,0 +1,77 @@
+{
+  "_README": "Ground-truth events for raw_window.csv (2026-04-28 11:00–13:30). Cat names anonymized as cat_a (3100g) and cat_b (7000g). Compare-tolerance: timestamp ±2s, weight ±20g, type/cat exact. Audited 2026-05-02; original in .private/algo/fixtures/.",
+  "window_start": "2026-04-28 11:00:00",
+  "window_end": "2026-04-28 13:30:00",
+  "comparison_tolerance": {
+    "timestamp_seconds": 2,
+    "weight_grams": 20
+  },
+  "cat_profiles": [
+    {"name": "cat_a", "weight_g": 3100, "slop_g": 1000},
+    {"name": "cat_b", "weight_g": 7000, "slop_g": 1000}
+  ],
+  "events": [
+    {
+      "timestamp": "2026-04-28T11:31:28",
+      "type": "potty",
+      "cat": "cat_a",
+      "weight_g": 3816,
+      "verified": true,
+      "note": "Segment start 4909, peak 9040, plateau modal value 8725 (11 occurrences in high-pass IQR-filtered samples). cat_weight = plateau - start = 3816g. Within ±1000g of cat_a profile (3100g). The .private audit file estimated plateau ≈8656 by eye; actual computed value is 8725."
+    },
+    {
+      "timestamp": "2026-04-28T11:42:45",
+      "type": "potty",
+      "cat": "cat_a",
+      "weight_g": 3732,
+      "verified": true,
+      "note": "Segment start 4993, peak 8771, plateau ≈8725. cat_weight = 3732g. cat_a."
+    },
+    {
+      "timestamp": "2026-04-28T12:20:11",
+      "type": "cleaning",
+      "cat": null,
+      "weight_g": -347,
+      "verified": true,
+      "note": "Segment start 5020, end 4673. Drop of 347g, well above MIN_CLEANING_DROP_G (100g)."
+    }
+  ],
+  "filtered_segments": [
+    {
+      "timestamp": "2026-04-28T11:04:46",
+      "legacy_label": "paranormal",
+      "filter_reason": "peak-start=14g, below MIN_POTTY_PEAK_DELTA_G (500g) and |end-start|=5g below event delta. Noise.",
+      "verified": true
+    },
+    {
+      "timestamp": "2026-04-28T12:31:34",
+      "legacy_label": "cleaning",
+      "filter_reason": "start-end=16g, below MIN_CLEANING_DROP_G (100g). Likely noise or box nudge.",
+      "verified": true
+    },
+    {
+      "timestamp": "2026-04-28T12:54:10",
+      "legacy_label": "potty Unknown 0.0kg",
+      "filter_reason": "peak-start=23g, no real cat presence. Legacy classified as potty due to end-start=16g > 10g, but plateau-end=0 (the bug). New rules require peak-start > MIN_POTTY_PEAK_DELTA_G.",
+      "verified": true
+    },
+    {
+      "timestamp": "2026-04-28T13:07:08",
+      "legacy_label": "paranormal",
+      "filter_reason": "peak-start=28g, below MIN_POTTY_PEAK_DELTA_G. Noise.",
+      "verified": true
+    },
+    {
+      "timestamp": "2026-04-28T13:13:09",
+      "legacy_label": "paranormal",
+      "filter_reason": "peak-start=19g, below MIN_POTTY_PEAK_DELTA_G. Noise.",
+      "verified": true
+    },
+    {
+      "timestamp": "2026-04-28T13:18:36",
+      "legacy_label": "paranormal",
+      "filter_reason": "peak-start=13g, below MIN_POTTY_PEAK_DELTA_G. Noise.",
+      "verified": true
+    }
+  ]
+}

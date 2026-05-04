@@ -1,14 +1,13 @@
 """MQTT ingestion daemon for petascale.
 
-Subscribes to sensor topics, stores raw readings, runs hot-path event
-detection, and publishes detected events back to MQTT.
+Subscribes to sensor topics and stores raw readings. Event detection runs
+in the warm-path daemon (`petascale.warm.litterbox`); this daemon only
+captures and persists raw data.
 
-Topic convention (input):  sensors/<device>/sensor/<name>/state
-Topic convention (output): petascale/events/<event_type>
+Topic convention (input): sensors/<device>/sensor/<name>/state
 """
 
 import asyncio
-import json
 import os
 import signal
 import time
@@ -19,14 +18,13 @@ import structlog
 from dotenv import load_dotenv
 
 from petascale.config import AppConfig, load_config
-from petascale.events import DetectedEvent, PresenceStateMachine, SensorReading, SensorType
+from petascale.events import SensorReading, SensorType
 from petascale.ingest.ha_backfill import run_backfill
 from petascale.store import Store
 
 logger = structlog.get_logger()
 
 SUBSCRIBE_TOPIC = "sensors/#"
-EVENT_TOPIC_PREFIX = "petascale/events"
 
 
 def _sensor_type_from_name(sensor_name: str) -> Optional[SensorType]:
@@ -85,20 +83,7 @@ class IngestionDaemon:
 
         self.cfg: AppConfig = load_config()
         self.store: Store = Store(self.db_path)
-        self._state_machines: dict[str, PresenceStateMachine] = {}
         self._shutdown = asyncio.Event()
-
-    def _get_or_create_sm(self, sensor_id: str) -> PresenceStateMachine:
-        if sensor_id not in self._state_machines:
-            t = self.cfg.thresholds
-            logger.info("Creating state machine", sensor_id=sensor_id)
-            self._state_machines[sensor_id] = PresenceStateMachine(
-                sensor_id,
-                weight_threshold_enter=t.enter_g,
-                weight_threshold_exit=t.exit_g,
-                stability_window_s=t.stability_window_s,
-            )
-        return self._state_machines[sensor_id]
 
     async def run(self) -> None:
         await self.store.initialize()
@@ -134,13 +119,11 @@ class IngestionDaemon:
                 if self._shutdown.is_set():
                     break
                 try:
-                    await self._handle_message(client, str(message.topic), message.payload)
+                    await self._handle_message(str(message.topic), message.payload)
                 except Exception as exc:
                     logger.error("Failed to handle message", topic=str(message.topic), error=str(exc), exc_info=True)
 
-    async def _handle_message(
-        self, client: aiomqtt.Client, topic: str, payload: bytes
-    ) -> None:
+    async def _handle_message(self, topic: str, payload: bytes) -> None:
         parsed = _parse_topic(topic)
         if parsed is None:
             return
@@ -161,30 +144,6 @@ class IngestionDaemon:
         logger.debug("Reading", sensor_id=sensor_id, value=value, type=sensor_type.value)
         await self.store.store_reading(reading)
         await self.store.update_checkpoint(sensor_id, reading.timestamp)
-
-        if sensor_type == SensorType.WEIGHT:
-            sm = self._get_or_create_sm(sensor_id)
-            event = sm.process_reading(reading)
-            if event:
-                event_id = await self.store.store_event(event)
-                await self._publish_event(client, event)
-                logger.info(
-                    "Event detected",
-                    event_type=event.event_type.value,
-                    sensor_id=sensor_id,
-                    event_id=event_id,
-                )
-
-    async def _publish_event(self, client: aiomqtt.Client, event: DetectedEvent) -> None:
-        topic = f"{EVENT_TOPIC_PREFIX}/{event.event_type.value}"
-        payload = json.dumps({
-            "sensor_id": event.sensor_id,
-            "timestamp": event.timestamp,
-            "duration_ms": event.duration_ms,
-            "metadata": event.metadata,
-        })
-        await client.publish(topic, payload)
-        logger.debug("Published event", topic=topic)
 
     async def shutdown(self) -> None:
         self._shutdown.set()

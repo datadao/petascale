@@ -47,6 +47,40 @@ producers/consumers, established homelab tool.
 Chosen for: columnar, compressed, readable by pandas/Polars/DuckDB, immutable
 once written, plays well with ZFS snapshots and cloud object storage.
 
+## Detection engine: Polars
+
+Chosen for: tiny dependency footprint (~15 MB) compared to pandas (~50 MB)
+relevant for the warm-path container; first-class time-based rolling
+windows (`rolling_mean_by`); native `forward_fill(limit=...)` matching the
+spec's ffill horizon cap; clean expressions for IQR + mode.
+
+**Rejected:**
+- **Pandas** — heaviest of the candidates; only edge it had over polars was
+  literal pseudocode parity with the algorithm spec, which is not worth a
+  35 MB image cost on a 512 MB LXC.
+- **DuckDB-only** — already in the analytics extra and stack-aligned, but
+  recursive CTEs for segment merging and IQR/mode in SQL hurt readability of
+  `detect/segments.py` and `detect/plateau.py`.
+- **Pure NumPy** — feasible but ~2× the LOC for time-rolling and ffill,
+  with no maintenance benefit.
+
+The `detect/*` modules are pure functions, so swapping engines later is
+contained. The acceptance fixture in `tests/fixtures/expected_events.json`
+is the engine-agnostic contract.
+
+## Events store: SQLite (TODO: revisit)
+
+Events live in the same SQLite DB as raw measurements, primary key
+`(sensor_id, timestamp, type)` with `ON CONFLICT DO NOTHING` for
+idempotent re-runs. The spec in `.private/algo/algo.md` D18 proposed
+DuckDB; we kept SQLite for stack consistency.
+
+**Revisit when** any of:
+- events table grows beyond ~1M rows (queries get slow);
+- analytical queries want to live in the same engine that holds the truth;
+- we move analytics to a unified DuckDB-on-SQLite-attach pattern and the
+  attach overhead becomes the bottleneck.
+
 ## Analytics engine: DuckDB
 
 Chosen for: reads SQLite directly, reads Parquet directly, fast columnar

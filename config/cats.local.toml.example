@@ -1,0 +1,21 @@
+# Cat profiles — copy to cats.local.toml and edit with your cats.
+# This file (cats.local.toml) is gitignored; treat names + photos as personal data.
+#
+# Each [[cats]] entry needs:
+#   name        — display name (shown in the dashboard)
+#   weight_g    — typical body weight in grams (no recent deposit)
+#   slop_g      — match tolerance; observed weight within ±slop_g is attributed
+#   avatar_path — optional; path to a JPG/PNG file. Tried as-given first,
+#                 then falls back to /data/avatars/<basename> in the container.
+
+[[cats]]
+name        = "cat_a"
+weight_g    = 4000
+slop_g      = 1000
+avatar_path = ".private/avatars/cat_a.png"
+
+[[cats]]
+name        = "cat_b"
+weight_g    = 7000
+slop_g      = 1000
+avatar_path = ".private/avatars/cat_b.png"

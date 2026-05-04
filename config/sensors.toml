@@ -1,13 +1,28 @@
 # petascale sensor configuration
 
-[thresholds]
-# Global weight thresholds for presence detection (grams)
-enter_g            = 300
-exit_g             = 100
-stability_window_s = 5
-
 [[sensors]]
 id        = "sensor14/cat_weight_sensor"
 ha_entity = "sensor.sensor14_cat_weight_sensor"
 name      = "Litter box"
 role      = "litterbox"   # litterbox | food | water | scale
+
+# Detection parameters per sensor role.
+# See docs/architecture.md and .private/algo/algo.md for the algorithm.
+[detection.litterbox]
+resample_freq_s        = 1
+ffill_cap_s            = 300
+baseline_window_s      = 5
+noise_threshold_g      = 10
+segment_buffer_s       = 60
+event_delta_g          = 10
+min_potty_peak_delta_g = 500
+min_cleaning_drop_g    = 100
+min_event_duration_s   = 3
+max_event_duration_s   = 600
+plateau_round_g        = 0.5
+iqr_multiplier         = 1.5
+warm_window_minutes    = 15
+warm_interval_seconds  = 60
+
+# Cat profiles live in cats.local.toml (gitignored).
+# See config/cats.local.toml.example for the schema.

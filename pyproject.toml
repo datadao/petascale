@@ -10,6 +10,7 @@ dependencies = [
     "aiomqtt>=2.0.0",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
+    "polars>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,7 @@ dev = [
 
 [project.scripts]
 petascale-ingest = "petascale.ingest.daemon:main"
+petascale-warm   = "petascale.warm.litterbox:main"
 
 [tool.ruff]
 line-length = 88

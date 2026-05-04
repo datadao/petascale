@@ -18,6 +18,25 @@ services:
       options:
         tag: petascale
 
+  warm:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: petascale-daemon
+    container_name: petascale-warm
+    restart: unless-stopped
+    environment:
+      DB_PATH: /data/petascale.db
+    volumes:
+      - /data/petascale:/data
+      - ../config:/app/config:ro
+    network_mode: host
+    command: ["python", "-m", "petascale.warm.litterbox"]
+    logging:
+      driver: journald
+      options:
+        tag: petascale-warm
+
   analytics:
     build:
       context: ..

@@ -89,6 +89,15 @@ cd /opt/petascale
 cp .env.example .env
 # Edit .env: set MQTT_HOST, HA_URL, HA_TOKEN
 
+# Cat avatars (optional — fallback is an initial-letter circle)
+# Copy locally-stored avatars (gitignored under .private/) onto the host,
+# then they're picked up by the dashboard container automatically:
+#   from dev:  scp .private/avatars/cat-*.png petascale-ingest.local:/tmp/
+#   on LXC:    mkdir -p /mnt/data/petascale/avatars && \
+#              mv /tmp/cat-*.png /mnt/data/petascale/avatars/
+# The committed config references .private/avatars/<file> for local preview;
+# the dashboard falls back to /data/avatars/<basename> in the container.
+
 # Build and start
 cd docker
 docker compose up -d --build

@@ -6,21 +6,30 @@
 Home Assistant sensors (weight, motion, litterbox, feeder, water, future
 cameras).
 
-### Layer 1 — Ingestion + Hot Path
-A single Python daemon that:
-- Subscribes to HA events via websocket or MQTT
+### Layer 1 — Ingestion (raw capture only)
+The `petascale-ingest` daemon:
+- Subscribes to HA events via MQTT (and runs an HA REST backfill on boot
+  to close gaps caused by daemon downtime)
 - Writes raw readings to the primary store
-- Runs a rolling-window state machine to detect events live
-- Publishes detected events back to MQTT for HA to consume
+- Does not detect events itself — detection is intrinsically batch
+  (segment-based plateau extraction needs the full segment in hand)
 
 ### Layer 2 — Primary Store
-SQLite file in WAL mode. Single writer (the ingestion daemon), many readers.
-Receives raw readings and event records continuously.
+SQLite file in WAL mode. The ingestion daemon writes `raw_measurements`;
+the warm daemon writes `events`. Both processes share the DB safely
+through WAL (concurrent reads + serialized writes).
 
-### Layer 3 — Warm Path (optional, ~5 min cadence)
-Cron/systemd job that re-runs event detection over recent raw data with better
-context (motion correlation, longer baselines, per-cat attribution). Writes
-corrected events to a separate table, never overwrites raw.
+### Layer 3 — Warm Path (`petascale-warm`, ~60 s cadence)
+Separate process running the polars-based detection pipeline
+(`petascale.detect.*`) over a sliding 15-minute window of raw readings.
+Each tick: resample → anomaly mask → segment merge → classify
+(potty / cleaning) → plateau-mode for cat weight → match against
+configured cat profiles. Idempotent: events keyed
+`(sensor_id, timestamp, type)` with `ON CONFLICT DO NOTHING`.
+
+Run as a separate container so a polars/pipeline crash does not affect raw
+capture. Algorithm spec lives in `.private/algo/algo.md`; the acceptance
+fixture in `tests/fixtures/expected_events.json` is the regression gate.
 
 ### Layer 4 — Cold Path (nightly)
 Batch job that computes daily aggregates, features, trends, anomaly scores.
@@ -48,68 +57,64 @@ Parquet archive on a nightly schedule (optional).
 │ websocket events / MQTT
 ▼
 ┌──────────────────────────────────────────────────────────┐
-│  Ingestion daemon (Python, ~150 lines)                   │
-│  • subscribes to HA events                                │
-│  • writes raw readings → SQLite raw tables                │
-│  • runs hot-path detector on rolling window (in-memory)   │
-│  • publishes detected events → MQTT + SQLite events       │
+│  petascale-ingest (Python daemon)                         │
+│  • subscribes to HA via MQTT                              │
+│  • HA REST backfill on boot                               │
+│  • writes raw readings → SQLite raw_measurements          │
 └──────────────────────────────────────────────────────────┘
-│                           │
-│ MQTT events               │ SQLite writes
-▼                           ▼
-┌──────────────────┐       ┌────────────────────────────────┐
-│  HA dashboard    │       │  petascale.db (SQLite, WAL mode)    │
-│  • live status   │       │   ├── raw_measurements         │
-│  • notifications │       │   ├── hot_events               │
-└──────────────────┘       │   ├── warm_events (5min job)   │
-│   ├── daily_features           │
-│   └── cats (dim table)         │
-└────────────────────────────────┘
+│
+▼
+┌──────────────────────────────────────────────────────────┐
+│  petascale.db (SQLite, WAL mode)                          │
+│   ├── raw_measurements                                    │
+│   ├── events                                              │
+│   ├── sensors                                             │
+│   └── ingestion_checkpoints                               │
+└──────────────────────────────────────────────────────────┘
+│           ▲
+│ reads     │ writes
+│           │
+▼           │
+┌──────────────────────────────────────────────────────────┐
+│  petascale-warm (60 s loop, polars)                       │
+│  • detect.{resample,anomaly,segments,plateau,classify}    │
+│  • upserts (sensor_id, timestamp, type) → events          │
+└──────────────────────────────────────────────────────────┘
 │
 ┌───────────┼──────────┐
 ▼           ▼          ▼
 ┌─────────┐ ┌────────┐ ┌──────────┐
-│ warm    │ │ cold   │ │ DuckDB   │
-│ worker  │ │ worker │ │ readers  │
-│ (5 min) │ │ (daily)│ │ (ad hoc) │
+│ cold    │ │ DuckDB │ │ HA       │
+│ aggreg. │ │ readers│ │ Lovelace │
+│ (nightly│ │ (dash) │ │ (links)  │
 └─────────┘ └────────┘ └──────────┘
-│           │          │
-└───────────┼──────────┘
-▼
-┌──────────────────────┐
-│  API / UI layer      │
-│  • iPhone / web      │
-│  • HA widget         │
-│  • Evidence site     │
-└──────────────────────┘
 
-## Hot-path state machine (weight sensor)
+## Warm-path detection pipeline (weight sensor)
 
-IDLE ─── weight > 300g for 3 samples ──► CAT_ENTERING
-│
-│ weight stable (σ < 20g) for 5s
-▼
-CAT_PRESENT ─► publish MQTT event
-│
-│ weight < 100g for 2 samples
-▼
-CAT_LEAVING
-│
-▼
-IDLE ─► publish session summary event
-(duration, median weight)
+Pure-function pipeline composed in `petascale.detect.pipeline.run`:
 
-When `CAT_PRESENT` fires: publish `cats/event/present` to MQTT.
-When `IDLE` returns: publish `cats/event/left` with session duration + median
-weight.
+```
+raw irregular samples (last 15 min)
+   → resample to 1 Hz grid, ffill capped at 300 s    (resample.py)
+   → flag points diverging from 5 s rolling mean     (anomaly.py)
+   → merge ±60 s buffers around abnormal points      (segments.py)
+   → for each segment, classify by start→end delta   (classify.py)
+        end > start + 10 g    → potty (if peak−start ≥ 500 g)
+        end < start − 10 g    → cleaning (if drop ≥ 100 g)
+        otherwise             → drop (paranormal)
+   → for potty: plateau-mode of high-pass IQR-filtered values  (plateau.py)
+   → match plateau − start_value to cat profile (slop_g)        (identify.py)
+```
 
-The warm-path job re-runs a better `detect_presence()` over the same raw window
-5 minutes later, with extra context (motion in the room, baseline noise, etc.).
-Writes to `warm_events` with a `supersedes_hot_event_id` column.
+All thresholds live in `[detection.litterbox]` in `config/sensors.toml`;
+cat profiles in `[[cats]]`. The full algorithm spec and design decisions
+D1–D20 are in `.private/algo/algo.md`. Acceptance gate:
+`tests/test_pipeline_acceptance.py` (3 events ±2 s ±20 g, 6 filtered
+segments must not appear).
 
 ## Total footprint
 
-One SQLite file, one MQTT broker (likely already running in HA), three Python
-scripts on schedules, one static Evidence site, one Litestream process.
-Estimated RAM across everything: under 200MB. Runs comfortably on a single
-small LXC or Docker host.
+One SQLite file, four containers on a single LXC (`daemon`, `warm`,
+`analytics`, `dashboard`/nginx), one MQTT broker (separate LXC), one
+Litestream process. Estimated RAM under 250 MB. Polars in the warm
+container is the single largest dep at ~15 MB.
