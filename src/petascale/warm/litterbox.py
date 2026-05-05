@@ -99,8 +99,16 @@ def process_sensor(
     *,
     since_ms: int | None = None,
     until_ms: int | None = None,
+    live: bool = False,
 ) -> int:
-    """Run the pipeline for one sensor over a window. Returns events upserted."""
+    """Run the pipeline for one sensor over a window. Returns events upserted.
+
+    When live=True (warm daemon mode), segments whose end touches the window
+    boundary are suppressed. This prevents the daemon from minting a new event
+    timestamp every 60 s for a visit that is still in progress: segment_end is
+    times.item(-1) in the segment DataFrame, so it advances with the window
+    until the cat leaves and the segment closes.
+    """
     until = until_ms if until_ms is not None else int(time.time() * 1000)
     since = since_ms if since_ms is not None else until - cfg.warm_window_minutes * 60_000
 
@@ -110,6 +118,16 @@ def process_sensor(
     events = run_pipeline(df, cfg, cats)
     if not events:
         return 0
+
+    if live:
+        until_dt = datetime.utcfromtimestamp(until / 1000.0)
+        events = [
+            e for e in events
+            if (until_dt - e.segment_end).total_seconds() > 2
+        ]
+        if not events:
+            return 0
+
     upsert_events(conn, sensor_id, events)
     logger.info(
         "Detected events",
@@ -152,7 +170,7 @@ class WarmDaemon:
             while not self._shutdown:
                 for s in litterboxes:
                     try:
-                        process_sensor(conn, s.id, det_cfg, cats)
+                        process_sensor(conn, s.id, det_cfg, cats, live=True)
                     except Exception:
                         logger.exception("Warm tick failed", sensor_id=s.id)
                 self._sleep(det_cfg.warm_interval_seconds)
