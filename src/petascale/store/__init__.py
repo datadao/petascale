@@ -45,20 +45,25 @@ class Store:
                 timestamp        INTEGER NOT NULL,
                 type             TEXT    NOT NULL,
                 sensor_id        TEXT    NOT NULL,
+                algo             TEXT    NOT NULL DEFAULT 'v1',
                 cat              TEXT,
                 weight_g         INTEGER,
                 cat_distance_g   INTEGER,
                 segment_start_ts INTEGER NOT NULL,
                 segment_end_ts   INTEGER NOT NULL,
                 created_at       INTEGER DEFAULT (strftime('%s', 'now') * 1000),
-                PRIMARY KEY (sensor_id, timestamp, type)
+                PRIMARY KEY (sensor_id, timestamp, type, algo)
             )
         """)
+        await self._migrate_events_algo_column()
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp)"
         )
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_cat ON events(cat, timestamp)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_algo ON events(algo, timestamp)"
         )
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
@@ -94,6 +99,38 @@ class Store:
         )
         await self._conn.commit()
 
+    async def _migrate_events_algo_column(self) -> None:
+        """Add algo column + rebuild PK if upgrading from a pre-registry schema."""
+        cursor = await self._conn.execute("PRAGMA table_info(events)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "algo" in cols:
+            return
+        logger.info("Migrating events table: adding algo column")
+        await self._conn.executescript("""
+            BEGIN;
+            ALTER TABLE events RENAME TO _events_pre_algo;
+            CREATE TABLE events (
+                timestamp        INTEGER NOT NULL,
+                type             TEXT    NOT NULL,
+                sensor_id        TEXT    NOT NULL,
+                algo             TEXT    NOT NULL DEFAULT 'v1',
+                cat              TEXT,
+                weight_g         INTEGER,
+                cat_distance_g   INTEGER,
+                segment_start_ts INTEGER NOT NULL,
+                segment_end_ts   INTEGER NOT NULL,
+                created_at       INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+                PRIMARY KEY (sensor_id, timestamp, type, algo)
+            );
+            INSERT INTO events
+                SELECT timestamp, type, sensor_id, 'v1', cat, weight_g,
+                       cat_distance_g, segment_start_ts, segment_end_ts, created_at
+                FROM _events_pre_algo;
+            DROP TABLE _events_pre_algo;
+            COMMIT;
+        """)
+        logger.info("Events table migration complete")
+
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
@@ -127,20 +164,20 @@ class Store:
         await self._conn.commit()
         return len(readings)
 
-    async def upsert_events(self, events: list[DetectedEvent]) -> int:
+    async def upsert_events(self, events: list[DetectedEvent], algo: str = "v1") -> int:
         """Insert events idempotently. Returns count attempted (DO NOTHING on conflict)."""
         if not events:
             return 0
         await self._conn.executemany(
             """
             INSERT INTO events
-                (timestamp, type, sensor_id, cat, weight_g, cat_distance_g,
+                (timestamp, type, sensor_id, algo, cat, weight_g, cat_distance_g,
                  segment_start_ts, segment_end_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (sensor_id, timestamp, type) DO NOTHING
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (sensor_id, timestamp, type, algo) DO NOTHING
             """,
             [
-                (e.timestamp, e.event_type.value, e.sensor_id, e.cat,
+                (e.timestamp, e.event_type.value, e.sensor_id, algo, e.cat,
                  e.weight_g, e.cat_distance_g,
                  e.segment_start_ts, e.segment_end_ts)
                 for e in events

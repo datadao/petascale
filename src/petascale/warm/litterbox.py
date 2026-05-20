@@ -21,9 +21,42 @@ from dotenv import load_dotenv
 
 from petascale.config import AppConfig, CatProfile, DetectionConfig, load_config
 from petascale.detect import DetectorEvent
-from petascale.detect import run as run_pipeline
+from petascale.detect import registry as _detect_registry
+from petascale.detect import run as _run_v1  # noqa: F401 — import triggers @algo("v1") registration
 
 logger = structlog.get_logger()
+
+
+def _ensure_events_algo_column(conn: sqlite3.Connection) -> None:
+    """Migrate pre-registry events table to include the algo column."""
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()]
+    if "algo" in cols:
+        return
+    logger.info("Migrating events table: adding algo column")
+    conn.executescript("""
+        BEGIN;
+        ALTER TABLE events RENAME TO _events_pre_algo;
+        CREATE TABLE events (
+            timestamp        INTEGER NOT NULL,
+            type             TEXT    NOT NULL,
+            sensor_id        TEXT    NOT NULL,
+            algo             TEXT    NOT NULL DEFAULT 'v1',
+            cat              TEXT,
+            weight_g         INTEGER,
+            cat_distance_g   INTEGER,
+            segment_start_ts INTEGER NOT NULL,
+            segment_end_ts   INTEGER NOT NULL,
+            created_at       INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            PRIMARY KEY (sensor_id, timestamp, type, algo)
+        );
+        INSERT INTO events
+            SELECT timestamp, type, sensor_id, 'v1', cat, weight_g,
+                   cat_distance_g, segment_start_ts, segment_end_ts, created_at
+            FROM _events_pre_algo;
+        DROP TABLE _events_pre_algo;
+        COMMIT;
+    """)
+    logger.info("Events table migration complete")
 
 
 def fetch_window(
@@ -60,6 +93,7 @@ def upsert_events(
     conn: sqlite3.Connection,
     sensor_id: str,
     events: list[DetectorEvent],
+    algo: str = "v1",
 ) -> int:
     """Insert events idempotently. Returns count attempted."""
     if not events:
@@ -69,6 +103,7 @@ def upsert_events(
             int(e.timestamp.replace(tzinfo=UTC).timestamp() * 1000),
             e.type,
             sensor_id,
+            algo,
             e.cat,
             e.weight_g,
             e.cat_distance_g,
@@ -80,10 +115,10 @@ def upsert_events(
     conn.executemany(
         """
         INSERT INTO events
-            (timestamp, type, sensor_id, cat, weight_g, cat_distance_g,
+            (timestamp, type, sensor_id, algo, cat, weight_g, cat_distance_g,
              segment_start_ts, segment_end_ts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (sensor_id, timestamp, type) DO NOTHING
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (sensor_id, timestamp, type, algo) DO NOTHING
         """,
         rows,
     )
@@ -100,8 +135,9 @@ def process_sensor(
     since_ms: int | None = None,
     until_ms: int | None = None,
     live: bool = False,
+    algo: str = "v1",
 ) -> int:
-    """Run the pipeline for one sensor over a window. Returns events upserted.
+    """Run the named algorithm for one sensor over a window. Returns events upserted.
 
     When live=True (warm daemon mode), segments whose end touches the window
     boundary are suppressed. This prevents the daemon from minting a new event
@@ -115,7 +151,9 @@ def process_sensor(
     df = fetch_window(conn, sensor_id, since, until)
     if df.is_empty():
         return 0
-    events = run_pipeline(df, cfg, cats)
+
+    pipeline_fn = _detect_registry.get(algo)
+    events = pipeline_fn(df, cfg, cats)
     if not events:
         return 0
 
@@ -128,10 +166,11 @@ def process_sensor(
         if not events:
             return 0
 
-    upsert_events(conn, sensor_id, events)
+    upsert_events(conn, sensor_id, events, algo)
     logger.info(
         "Detected events",
         sensor_id=sensor_id,
+        algo=algo,
         n=len(events),
         window_minutes=(until - since) // 60_000,
     )
@@ -154,25 +193,31 @@ class WarmDaemon:
             return
         det_cfg = self.cfg.detection.get("litterbox", DetectionConfig())
         cats = self.cfg.cats
+        active_algos = self.cfg.active_algos
 
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        _ensure_events_algo_column(conn)
         try:
             logger.info(
                 "Warm daemon started",
                 sensors=len(litterboxes),
                 cats=len(cats),
+                algos=active_algos,
                 interval_s=det_cfg.warm_interval_seconds,
                 window_min=det_cfg.warm_window_minutes,
             )
             while not self._shutdown:
                 for s in litterboxes:
-                    try:
-                        process_sensor(conn, s.id, det_cfg, cats, live=True)
-                    except Exception:
-                        logger.exception("Warm tick failed", sensor_id=s.id)
+                    for algo_name in active_algos:
+                        try:
+                            process_sensor(conn, s.id, det_cfg, cats,
+                                           live=True, algo=algo_name)
+                        except Exception:
+                            logger.exception("Warm tick failed",
+                                             sensor_id=s.id, algo=algo_name)
                 self._sleep(det_cfg.warm_interval_seconds)
         finally:
             conn.close()

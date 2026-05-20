@@ -24,5 +24,11 @@ iqr_multiplier         = 1.5
 warm_window_minutes    = 15
 warm_interval_seconds  = 60
 
+[warm]
+# Algorithm names to run on every warm-path tick. Each algo writes events
+# tagged with its own name so results can be compared. Registered algos:
+# "v1" — rolling-baseline segment pipeline (current).
+active_algos = ["v1"]
+
 # Cat profiles live in cats.local.toml (gitignored).
 # See config/cats.local.toml.example for the schema.

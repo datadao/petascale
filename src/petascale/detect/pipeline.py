@@ -11,6 +11,7 @@ from petascale.detect.anomaly import mark_anomalies
 from petascale.detect.classify import classify_segment
 from petascale.detect.identify import identify_cat
 from petascale.detect.plateau import estimate_plateau
+from petascale.detect.registry import algo as _register_algo
 from petascale.detect.resample import resample_1hz_ffill
 from petascale.detect.segments import extract_segments
 
@@ -26,6 +27,7 @@ class DetectorEvent:
     segment_end: datetime
 
 
+@_register_algo("v1")
 def run(
     df: pl.DataFrame,
     cfg: DetectionConfig,

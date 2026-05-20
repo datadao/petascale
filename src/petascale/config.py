@@ -57,6 +57,7 @@ class AppConfig:
     detection: dict[str, DetectionConfig] = field(default_factory=dict)
     cats: list[CatProfile] = field(default_factory=list)
     timezone: str = "UTC"
+    active_algos: list[str] = field(default_factory=lambda: ["v1"])
 
 
 def load_config(
@@ -87,4 +88,8 @@ def load_config(
             cats_path,
         )
 
-    return AppConfig(sensors=sensors, detection=detection, cats=cats, timezone=timezone)
+    active_algos = raw.get("warm", {}).get("active_algos", ["v1"])
+    return AppConfig(
+        sensors=sensors, detection=detection, cats=cats,
+        timezone=timezone, active_algos=active_algos,
+    )

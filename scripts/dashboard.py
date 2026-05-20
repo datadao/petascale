@@ -81,6 +81,7 @@ def _build_cats_header(
     con: duckdb.DuckDBPyConnection,
     cats: list[CatProfile],
     tz: str,
+    algo: str = "v1",
 ) -> str:
     """Render the cat-cards strip (avatar + name + weight stats + last-seen ago)."""
     if not cats:
@@ -95,7 +96,7 @@ def _build_cats_header(
                            AT TIME ZONE '{tz}')          AS day,
                        avg(weight_g) / 1000.0             AS avg_kg
                 FROM sqlite.events
-                WHERE type = 'potty' AND cat IS NOT NULL
+                WHERE type = 'potty' AND cat IS NOT NULL AND algo = '{algo}'
                 GROUP BY 1, 2
             ),
             latest_day AS (
@@ -109,10 +110,10 @@ def _build_cats_header(
                    (SELECT max(to_timestamp(timestamp / 1000)
                                AT TIME ZONE '{tz}')::varchar
                     FROM sqlite.events
-                    WHERE type = 'potty' AND cat = ld.cat) AS last_seen,
+                    WHERE type = 'potty' AND cat = ld.cat AND algo = '{algo}') AS last_seen,
                    (SELECT epoch_ms(now()) - max(timestamp)
                     FROM sqlite.events
-                    WHERE type = 'potty' AND cat = ld.cat) AS last_seen_delta_ms
+                    WHERE type = 'potty' AND cat = ld.cat AND algo = '{algo}') AS last_seen_delta_ms
             FROM latest_day ld
             WHERE rn = 1
         """).fetchall()
@@ -168,6 +169,7 @@ def _build_sensors_strip(
     con: duckdb.DuckDBPyConnection,
     sensors: list,
     tz: str,
+    algo: str = "v1",
 ) -> str:
     """Render a strip showing last-cleaned time per litterbox sensor."""
     rows = con.execute(f"""
@@ -176,7 +178,7 @@ def _build_sensors_strip(
             max(to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}')::varchar AS last_cleaned,
             epoch_ms(now()) - max(timestamp) AS delta_ms
         FROM sqlite.events
-        WHERE type = 'cleaning'
+        WHERE type = 'cleaning' AND algo = '{algo}'
         GROUP BY sensor_id
         ORDER BY sensor_id
     """).fetchall()
@@ -301,10 +303,11 @@ def _attach_sources(con: duckdb.DuckDBPyConnection, db_path: str, archive_dir: P
 def build(db_path: str, archive_dir: str, out_path: str) -> None:
     cfg = load_config()
     tz = cfg.timezone
+    algo = cfg.active_algos[0] if cfg.active_algos else "v1"
     con = duckdb.connect()
     _attach_sources(con, db_path, Path(archive_dir))
-    cats_header = _build_cats_header(con, cfg.cats, tz)
-    sensors_strip = _build_sensors_strip(con, cfg.sensors, tz)
+    cats_header = _build_cats_header(con, cfg.cats, tz, algo)
+    sensors_strip = _build_sensors_strip(con, cfg.sensors, tz, algo)
 
     history = con.execute("""
         SELECT
@@ -336,6 +339,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         FROM sqlite.events
         WHERE type = 'potty'
           AND cat IS NOT NULL
+          AND algo = '{algo}'
           AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
         ORDER BY ts
     """).fetchall()
@@ -349,6 +353,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         FROM sqlite.events
         WHERE type = 'potty'
           AND cat IS NOT NULL
+          AND algo = '{algo}'
           AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
         GROUP BY 1, 2
         ORDER BY 1
@@ -363,6 +368,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         FROM sqlite.events
         WHERE type = 'potty'
           AND cat IS NOT NULL
+          AND algo = '{algo}'
           AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
         GROUP BY 1, 2
         ORDER BY 1
@@ -375,6 +381,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
             count(*) AS n
         FROM sqlite.events
         WHERE type = 'cleaning'
+          AND algo = '{algo}'
           AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
         GROUP BY 1
         ORDER BY 1
@@ -389,7 +396,9 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         FROM all_measurements
     """).fetchone()
 
-    n_events = con.execute("SELECT count(*) FROM sqlite.events").fetchone()[0]
+    n_events = con.execute(
+        f"SELECT count(*) FROM sqlite.events WHERE algo = '{algo}'"
+    ).fetchone()[0]
 
     con.close()
 
