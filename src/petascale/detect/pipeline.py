@@ -79,14 +79,28 @@ def run(
             continue
 
         cat_name, distance = (None, None)
+        event_type = cls.type
+        cat_weight_g = cls.cat_weight_g
+
         if cls.type == "potty":
             cat_name, distance = identify_cat(cls.cat_weight_g, cats)
+        elif cls.type == "cleaning":
+            # If the drop magnitude matches a cat weight, the rolling baseline
+            # adapted while the cat was sitting in the box — the departure then
+            # looks like a downward anomaly and gets misclassified as a cleaning.
+            # Reclassify as potty and identify the cat by the drop amount.
+            drop = -cls.cat_weight_g  # cat_weight_g is negative for cleaning
+            cat_match, dist = identify_cat(drop, cats)
+            if cat_match is not None:
+                event_type = "potty"
+                cat_weight_g = drop
+                cat_name, distance = cat_match, dist
 
         events.append(DetectorEvent(
             timestamp=cls.segment_end,
-            type=cls.type,
+            type=event_type,
             cat=cat_name,
-            weight_g=cls.cat_weight_g,
+            weight_g=cat_weight_g,
             cat_distance_g=distance,
             segment_start=cls.segment_start,
             segment_end=cls.segment_end,
