@@ -231,41 +231,9 @@ def _build_health_section(
     cat_alert: dict[str, int],
 ) -> str:
     """Health status cards + last-7-day weight chart with 30d band and daily avg line."""
-    # Build status cards (potty gap only — weight stats live in the header)
-    cards: list[str] = []
-    for row in health_rows:
-        name, gap_ms, last_g, avg_g, min_g, max_g = row
-
-        gap_h = int(gap_ms) // 3_600_000
-        gap_m = (int(gap_ms) % 3_600_000) // 60_000
-        if gap_h < 12:
-            sev = "ok"
-            gap_str = f"{gap_h}h {gap_m:02d}m ago"
-        elif gap_h < 24:
-            sev = "warn"
-            gap_str = f"{gap_h}h {gap_m:02d}m ago"
-        else:
-            sev = "bad"
-            gap_str = f"{gap_h // 24}d {gap_h % 24}h ago"
-
-        cards.append(f"""
-        <div class="health-card {sev}">
-          <div class="h-name">{html.escape(name)}</div>
-          <div class="h-row">
-            <span class="h-label">Last potty</span>
-            <span class="h-val {sev}">{html.escape(gap_str)}</span>
-          </div>
-        </div>""")
-
-    if not cards:
-        cards_html = '<p class="no-active">No cats seen in the last 7 days.</p>'
-    else:
-        cards_html = f'<div class="health-grid">{"".join(cards)}</div>'
-
-    # Build weight chart (7d scatter + 30d band)
     active_names = [row[0] for row in health_rows]
     if not active_names:
-        return cards_html
+        return '<p class="no-active">No cats seen in the last 7 days.</p>'
 
     # Band data keyed by cat
     band = {row[0]: (row[3], row[4], row[5]) for row in health_rows}  # avg_g, min_g, max_g
@@ -360,7 +328,7 @@ def _build_health_section(
     fig.update_xaxes(showgrid=False, tickfont_size=10)
 
     chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn", config={"responsive": True})
-    return cards_html + f'<div class="chart-wrap">{chart_html}</div>'
+    return f'<div class="chart-wrap">{chart_html}</div>'
 
 
 def _attach_sources(con: duckdb.DuckDBPyConnection, db_path: str, archive_dir: Path) -> str:
