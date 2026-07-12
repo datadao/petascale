@@ -30,7 +30,6 @@ _OUT_DEFAULT = "/data/dashboard.html"
 _CAT_COLORS = ["#2da44e", "#0969da", "#cf222e", "#8250df", "#bc4c00", "#1b7f37"]
 _CLEAN_COLOR = "#8250df"
 _AVATAR_PROD_DIR = Path("/data/avatars")
-_PLOTLY_CDN = "https://cdn.plot.ly/plotly-6.7.0.min.js"
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -349,7 +348,7 @@ def _build_health_section(
     fig.update_yaxes(title_text="kg", showgrid=True, gridcolor="#d0d7de", title_font_size=11)
     fig.update_xaxes(showgrid=False, tickfont_size=10)
 
-    chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+    chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn", config={"responsive": True})
     return cards_html + f'<div class="chart-wrap">{chart_html}</div>'
 
 
@@ -801,7 +800,6 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>petascale</title>
-  <script src="{_PLOTLY_CDN}"></script>
   <style>{_PAGE_CSS}</style>
 </head>
 <body>
