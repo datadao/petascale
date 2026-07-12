@@ -49,6 +49,7 @@ class CatProfile:
     weight_g: int
     slop_g: int
     avatar_path: str | None = None  # filesystem path to avatar image (jpg/png)
+    weight_alert_g: int = 300  # flag if last visit differs from 30d avg by more than this
 
 
 @dataclass
