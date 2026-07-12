@@ -226,6 +226,7 @@ def _build_health_section(
     health_rows: list,
     week_weights: list,
     week_daily_avg: list,
+    week_daily_potty: list,
     cats: list[CatProfile],
     cat_color: dict[str, str],
     cat_alert: dict[str, int],
@@ -327,8 +328,41 @@ def _build_health_section(
     fig.update_yaxes(title_text="kg", showgrid=True, gridcolor="#d0d7de", title_font_size=11)
     fig.update_xaxes(showgrid=False, tickfont_size=10)
 
-    chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn", config={"responsive": True})
-    return f'<div class="chart-wrap">{chart_html}</div>'
+    weight_html = fig.to_html(full_html=False, include_plotlyjs="cdn", config={"responsive": True})
+
+    # Potty visit bar chart — daily counts per cat, last 7 days
+    fig2 = go.Figure()
+    for name in active_names:
+        color = cat_color.get(name, _CAT_COLORS[0])
+        pts = [(r[1], r[2]) for r in week_daily_potty if r[0] == name]
+        if pts:
+            fig2.add_trace(go.Bar(
+                x=[p[0] for p in pts],
+                y=[p[1] for p in pts],
+                name=name,
+                marker_color=color,
+                hovertemplate=f"{name} %{{x|%b %d}}: %{{y}} visits<extra></extra>",
+            ))
+
+    fig2.update_layout(
+        title=dict(text="Potty visits — last 7 days", font_size=13, font_color="#1f2328"),
+        paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
+        font_color="#1f2328",
+        margin=dict(t=45, b=30, l=52, r=16),
+        height=200, autosize=True,
+        barmode="group",
+        legend=dict(
+            orientation="h", yanchor="bottom", y=-0.40,
+            xanchor="center", x=0.5,
+            bgcolor="#f6f8fa", bordercolor="#d0d7de", borderwidth=1, font_size=11,
+        ),
+    )
+    fig2.update_yaxes(title_text="visits", showgrid=True, gridcolor="#d0d7de",
+                      tick0=0, dtick=1, title_font_size=11)
+    fig2.update_xaxes(showgrid=False, tickfont_size=10, tickformat="%b %d")
+
+    potty_html = fig2.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+    return f'<div class="chart-wrap">{weight_html}</div><div class="chart-wrap">{potty_html}</div>'
 
 
 def _attach_sources(con: duckdb.DuckDBPyConnection, db_path: str, archive_dir: Path) -> str:
@@ -530,6 +564,17 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         ORDER BY 2
     """).fetchall()
 
+    week_daily_potty = con.execute(f"""
+        SELECT cat,
+               date_trunc('day', to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}') AS day,
+               count(*) AS n
+        FROM sqlite.events
+        WHERE type = 'potty' AND cat IS NOT NULL AND algo = '{algo}'
+          AND timestamp >= epoch_ms(now()) - 7 * 86400000
+        GROUP BY 1, 2
+        ORDER BY 2
+    """).fetchall()
+
     # Charts tab: existing data
     history = con.execute("""
         SELECT
@@ -631,7 +676,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
 
     # ── Health tab ──────────────────────────────────────────────────────────
     health_html = _build_health_section(
-        health_rows, week_weights, week_daily_avg, cfg.cats, cat_color, cat_alert,
+        health_rows, week_weights, week_daily_avg, week_daily_potty, cfg.cats, cat_color, cat_alert,
     )
 
     # ── Charts tab ──────────────────────────────────────────────────────────
