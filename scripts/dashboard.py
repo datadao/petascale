@@ -170,14 +170,28 @@ def _build_sensors_strip(
     algo: str = "v1",
 ) -> str:
     rows = con.execute(f"""
-        SELECT
-            sensor_id,
-            max(to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}')::varchar AS last_cleaned,
-            epoch_ms(now()) - max(timestamp) AS delta_ms
-        FROM sqlite.events
-        WHERE type = 'cleaning' AND algo = '{algo}'
-        GROUP BY sensor_id
-        ORDER BY sensor_id
+        WITH last_clean AS (
+            SELECT sensor_id,
+                   max(timestamp) AS clean_ts
+            FROM sqlite.events
+            WHERE type = 'cleaning' AND algo = '{algo}'
+            GROUP BY sensor_id
+        ),
+        dirty AS (
+            SELECT e.sensor_id, count(*) AS potty_since
+            FROM sqlite.events e
+            JOIN last_clean lc ON e.sensor_id = lc.sensor_id
+            WHERE e.type = 'potty' AND e.algo = '{algo}'
+              AND e.timestamp > lc.clean_ts
+            GROUP BY e.sensor_id
+        )
+        SELECT lc.sensor_id,
+               to_timestamp(lc.clean_ts / 1000) AT TIME ZONE '{tz}' AS last_cleaned_ts,
+               epoch_ms(now()) - lc.clean_ts                          AS delta_ms,
+               COALESCE(d.potty_since, 0)                             AS potty_since
+        FROM last_clean lc
+        LEFT JOIN dirty d ON lc.sensor_id = d.sensor_id
+        ORDER BY lc.sensor_id
     """).fetchall()
 
     if not rows:
@@ -186,12 +200,16 @@ def _build_sensors_strip(
     sensor_name = {s.id: s.name for s in sensors}
 
     items: list[str] = []
-    for sensor_id, last_cleaned_str, delta_ms in rows:
+    for sensor_id, last_cleaned_ts, delta_ms, potty_since in rows:
         friendly = html.escape(sensor_name.get(sensor_id, sensor_id))
-        if last_cleaned_str:
-            dt = html.escape(last_cleaned_str[:16])
+        if last_cleaned_ts:
+            dt = html.escape(str(last_cleaned_ts)[:16])
             ago = _ago(delta_ms)
-            stat = f'last cleaned {dt}<span class="ago"> · {ago}</span>'
+            dirty_note = (
+                f'<span class="dirty"> · {potty_since} visit{"s" if potty_since != 1 else ""} since</span>'
+                if potty_since > 0 else ""
+            )
+            stat = f'last cleaned {dt}<span class="ago"> · {ago}</span>{dirty_note}'
         else:
             stat = "never cleaned"
         items.append(
@@ -207,19 +225,17 @@ def _build_sensors_strip(
 def _build_health_section(
     health_rows: list,
     week_weights: list,
+    week_daily_avg: list,
     cats: list[CatProfile],
     cat_color: dict[str, str],
     cat_alert: dict[str, int],
 ) -> str:
-    """Health status cards + last-7-day weight chart with 30d band."""
-    cat_by_name = {c.name: c for c in cats}
-
-    # Build status cards
+    """Health status cards + last-7-day weight chart with 30d band and daily avg line."""
+    # Build status cards (potty gap only — weight stats live in the header)
     cards: list[str] = []
     for row in health_rows:
         name, gap_ms, last_g, avg_g, min_g, max_g = row
 
-        # Potty gap severity
         gap_h = int(gap_ms) // 3_600_000
         gap_m = (int(gap_ms) % 3_600_000) // 60_000
         if gap_h < 12:
@@ -230,29 +246,7 @@ def _build_health_section(
             gap_str = f"{gap_h}h {gap_m:02d}m ago"
         else:
             sev = "bad"
-            days = gap_h // 24
-            hrs = gap_h % 24
-            gap_str = f"{days}d {hrs}h ago"
-
-        # Weight drift row
-        weight_html = ""
-        if last_g is not None and avg_g is not None:
-            last_kg = last_g / 1000.0
-            lbs = last_kg * 2.20462
-            delta = last_g - avg_g
-            sign = "+" if delta >= 0 else "−"
-            arrow = "↑" if delta > 0 else "↓"
-            alert = cat_alert.get(name, 300)
-            drift_sev = "bad" if abs(delta) > alert else ("warn" if abs(delta) > alert * 0.7 else "ok")
-            weight_html = f"""
-          <div class="h-row">
-            <span class="h-label">Weight</span>
-            <span class="h-val">{last_kg:.2f} kg ({lbs:.2f} lbs)</span>
-          </div>
-          <div class="h-row">
-            <span class="h-label">vs 30d avg</span>
-            <span class="h-delta {drift_sev}">{arrow} {sign}{abs(int(delta))}g</span>
-          </div>"""
+            gap_str = f"{gap_h // 24}d {gap_h % 24}h ago"
 
         cards.append(f"""
         <div class="health-card {sev}">
@@ -261,7 +255,6 @@ def _build_health_section(
             <span class="h-label">Last potty</span>
             <span class="h-val {sev}">{html.escape(gap_str)}</span>
           </div>
-          {weight_html}
         </div>""")
 
     if not cards:
@@ -321,7 +314,7 @@ def _build_health_section(
                 y=[p[1] for p in pts],
                 mode="markers",
                 name=name,
-                marker=dict(color=color, size=7, opacity=0.8, line=dict(width=0)),
+                marker=dict(color=color, size=7, opacity=0.55, line=dict(width=0)),
                 customdata=[[lb] for lb in lbs_vals],
                 hovertemplate=(
                     f"{name} %{{x|%b %d %H:%M}}: "
@@ -329,10 +322,28 @@ def _build_health_section(
                 ),
             ))
 
+        daily_pts = [(r[1], r[2]) for r in week_daily_avg if r[0] == name]
+        if daily_pts:
+            daily_lbs = [p[1] * 2.20462 for p in daily_pts]
+            fig.add_trace(go.Scatter(
+                x=[p[0] for p in daily_pts],
+                y=[p[1] for p in daily_pts],
+                mode="lines+markers",
+                name=f"{name} daily avg",
+                showlegend=False,
+                line=dict(color=color, width=2.5),
+                marker=dict(color=color, size=5),
+                customdata=[[lb] for lb in daily_lbs],
+                hovertemplate=(
+                    f"{name} avg %{{x|%b %d}}: "
+                    f"%{{y:.2f}} kg (%{{customdata[0]:.2f}} lbs)<extra></extra>"
+                ),
+            ))
+
     fig.update_layout(
         title=dict(
             text="Weight — last 7 days  <span style='font-size:11px;color:#57606a'>"
-                 "(shaded band = 30d min/max · dashed = 30d avg)</span>",
+                 "(band = 30d min/max · dashed = 30d avg · line = daily avg)</span>",
             font_size=13, font_color="#1f2328",
         ),
         paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
@@ -417,6 +428,7 @@ body {
 .sensor-item { color: #57606a; }
 .sensor-item .sensor-name { font-weight: 600; color: #1f2328; }
 .sensor-item .ago { color: #8250df; font-weight: 500; }
+.sensor-item .dirty { color: #bf8700; font-weight: 500; }
 /* Tabs */
 .tab-nav {
   display: flex; gap: 0;
@@ -539,6 +551,17 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
         ORDER BY ts
     """).fetchall()
 
+    week_daily_avg = con.execute(f"""
+        SELECT cat,
+               date_trunc('day', to_timestamp(timestamp / 1000) AT TIME ZONE '{tz}') AS day,
+               avg(weight_g) / 1000.0 AS avg_kg
+        FROM sqlite.events
+        WHERE type = 'potty' AND cat IS NOT NULL AND algo = '{algo}'
+          AND timestamp >= epoch_ms(now()) - 7 * 86400000
+        GROUP BY 1, 2
+        ORDER BY 2
+    """).fetchall()
+
     # Charts tab: existing data
     history = con.execute("""
         SELECT
@@ -640,7 +663,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
 
     # ── Health tab ──────────────────────────────────────────────────────────
     health_html = _build_health_section(
-        health_rows, week_weights, cfg.cats, cat_color, cat_alert,
+        health_rows, week_weights, week_daily_avg, cfg.cats, cat_color, cat_alert,
     )
 
     # ── Charts tab ──────────────────────────────────────────────────────────
