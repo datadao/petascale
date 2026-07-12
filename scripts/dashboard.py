@@ -520,7 +520,7 @@ def build(db_path: str, archive_dir: str, out_path: str) -> None:
             SELECT cat, avg(weight_g) AS avg_g, min(weight_g) AS min_g, max(weight_g) AS max_g
             FROM sqlite.events
             WHERE type = 'potty' AND cat IS NOT NULL AND algo = '{algo}'
-              AND timestamp >= epoch_ms(now()) - 30 * 86400000
+              AND timestamp >= epoch_ms(now()) - 30::BIGINT * 86400000
             GROUP BY cat
         )
         SELECT l7.cat, l7.gap_ms, lw.weight_g, b.avg_g, b.min_g, b.max_g
