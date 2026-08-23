@@ -189,15 +189,41 @@ class TestClassify:
 
 
 class TestIdentify:
-    def test_first_match_wins(self):
+    def test_single_match(self):
+        profiles = [
+            CatProfile("cat_a", 3000, 500),
+            CatProfile("cat_b", 7000, 500),
+        ]
+        name, dist = identify_cat(3200, profiles)
+        assert name == "cat_a"
+        assert dist == 200
+
+    def test_ambiguous_match_is_unattributed(self):
         profiles = [
             CatProfile("cat_a", 3000, 1000),
             CatProfile("cat_b", 3500, 1000),
         ]
-        # 3200g matches both within slop; cat_a declared first
+        # 3200g falls inside both windows — crediting the first-declared cat
+        # would silently corrupt both cats' weight history.
         name, dist = identify_cat(3200, profiles)
+        assert name is None
+        assert dist is None
+
+    def test_overlapping_profiles_still_match_outside_the_overlap(self):
+        profiles = [
+            CatProfile("cat_a", 3000, 1000),
+            CatProfile("cat_b", 3500, 1000),
+        ]
+        # windows are [2000, 4000] and [2500, 4500]; 2200g is below the
+        # overlap so it still resolves cleanly to cat_a
+        name, dist = identify_cat(2200, profiles)
         assert name == "cat_a"
-        assert dist == 200
+        assert dist == 800
+
+    def test_window_edge_is_inclusive(self):
+        profiles = [CatProfile("cat_a", 5000, 700)]
+        assert identify_cat(5700, profiles) == ("cat_a", 700)
+        assert identify_cat(5701, profiles) == (None, None)
 
     def test_no_match(self):
         profiles = [CatProfile("cat_a", 3000, 500)]

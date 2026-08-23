@@ -5,6 +5,7 @@ and cat profiles from `config/cats.local.toml` (gitignored — names and
 avatar paths are personal). Both files are merged into a single AppConfig.
 """
 
+import itertools
 import logging
 import tomllib
 from dataclasses import dataclass, field
@@ -51,6 +52,31 @@ class CatProfile:
     avatar_path: str | None = None  # filesystem path to avatar image (jpg/png)
     weight_alert_g: int = 300  # flag if last visit differs from 30d avg by more than this
 
+    @property
+    def window_g(self) -> tuple[int, int]:
+        """Inclusive weight range this profile accepts, per `identify_cat`."""
+        return self.weight_g - self.slop_g, self.weight_g + self.slop_g
+
+
+def cat_profile_overlaps(cats: list[CatProfile]) -> list[str]:
+    """Return one description per pair of cat profiles with intersecting windows.
+
+    Windows are inclusive on both ends (`identify_cat` matches on `<=`), so
+    profiles that merely touch at a single gram still count as overlapping.
+
+    Overlaps are costly in both directions: a reading in the shared range is
+    left unattributed, and the range that *should* separate the cats is the
+    first thing to disappear as one of them gains weight.
+    """
+    problems: list[str] = []
+    for a, b in itertools.combinations(cats, 2):
+        (a_lo, a_hi), (b_lo, b_hi) = a.window_g, b.window_g
+        if a_lo <= b_hi and b_lo <= a_hi:
+            problems.append(
+                f"{a.name} [{a_lo}, {a_hi}] overlaps {b.name} [{b_lo}, {b_hi}]"
+            )
+    return problems
+
 
 @dataclass
 class AppConfig:
@@ -87,6 +113,19 @@ def load_config(
             "cat profile file not found: %s — events will not be attributed "
             "to a cat. Copy config/cats.local.toml.example and edit.",
             cats_path,
+        )
+
+    # Log the acceptance windows so the deployed state is visible in the
+    # journal, and shout about overlaps. Deliberately not fatal: the warm
+    # daemon restarts unless-stopped, so raising here would crash-loop and
+    # stop detection entirely — strictly worse than attributing nothing.
+    for c in cats:
+        lo, hi = c.window_g
+        log.info("Cat profile %s: accepts %d-%d g", c.name, lo, hi)
+    for problem in cat_profile_overlaps(cats):
+        log.error(
+            "Cat profile overlap — readings in the shared range are left "
+            "unattributed: %s", problem,
         )
 
     active_algos = raw.get("warm", {}).get("active_algos", ["v1"])
