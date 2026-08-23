@@ -134,6 +134,65 @@ journalctl -u petascale-backup -n 50
 
 ---
 
+## Cat profile calibration (homelab)
+
+`identify_cat` accepts a reading only if it lands in exactly one profile's
+`[weight_g - slop_g, weight_g + slop_g]` window. Outside every window, or
+inside two, the visit is stored with `cat = NULL` — and since every dashboard
+query filters `cat IS NOT NULL`, it disappears from the UI rather than raising
+anything. **A cat that quietly stops appearing is a profile problem until
+proven otherwise.**
+
+Sizing `slop_g`: the plateau estimator is tight — across 75 clean visits the
+spread around the same-day mean was 42 g SD, ±123 g worst case. Everything
+above ~150 g of slop is therefore budget for *drift between calibrations*, not
+for noise. A growing cat needs `weight_g` re-centred every few months; a 700 g
+slop on a cat gaining ~8 g/day buys roughly two months before visits start
+dropping out.
+
+```bash
+# What the unattributed visits weigh — the cluster is the cat that fell out
+sqlite3 /data/petascale/petascale.db "
+SELECT date(timestamp/1000,'unixepoch') AS day, count(*) AS n,
+       min(weight_g), round(avg(weight_g)) AS avg_g, max(weight_g)
+FROM events WHERE type='potty' AND cat IS NULL AND algo='v1'
+GROUP BY 1 ORDER BY 1;"
+
+# Per-cat weight trend — watch for a profile the cat is drifting out of
+sqlite3 /data/petascale/petascale.db "
+SELECT cat, date(timestamp/1000,'unixepoch') AS day, count(*) AS n,
+       round(avg(weight_g)) AS avg_g
+FROM events WHERE type='potty' AND cat IS NOT NULL AND algo='v1'
+GROUP BY 1,2 ORDER BY 2;"
+
+# Visits misfiled as cleanings: a failed identify also breaks the
+# baseline-adapted-exit rescue in pipeline.py, so the visit lands as a cleaning
+sqlite3 /data/petascale/petascale.db "
+SELECT datetime(timestamp/1000,'unixepoch') AS ts, weight_g
+FROM events WHERE type='cleaning' AND algo='v1' AND weight_g < -3000
+ORDER BY timestamp;"
+```
+
+After editing `config/cats.local.toml` (gitignored — it must be edited on the
+LXC directly, it does not travel via git):
+
+```bash
+docker restart petascale-warm          # config is read once at startup
+journalctl -t petascale-warm -n 20     # confirm the windows it logged
+```
+
+Startup logs one `Cat profile <name>: accepts <lo>-<hi> g` line per cat and an
+ERROR per overlapping pair. Overlap is deliberately not fatal — the warm
+container restarts `unless-stopped`, so raising would crash-loop and stop
+detection altogether, which is worse than attributing nothing.
+
+**Bringing a cat back onto the system** (new box, or one that moved rooms):
+their old `weight_g` is stale the moment they stop being measured. Widen
+`slop_g` enough to catch them at all, watch the unattributed-weights query for
+their cluster, then re-centre `weight_g` on it and tighten `slop_g` back down
+until the windows are disjoint. `pytest tests/test_config.py` asserts the
+deployed profiles do not overlap.
+
 ## Common problems
 
 | Symptom | Cause | Fix |
@@ -144,7 +203,9 @@ journalctl -u petascale-backup -n 50
 | Daemon can't reach MQTT | `.local` DNS doesn't resolve in container | Use IP in `MQTT_HOST` in `.env` on LXC |
 | sqlite3 not found | Not installed | `apt-get install -y sqlite3` |
 | No new events appearing | Warm container down or DB lock | `docker compose ps`; check warm logs; verify `raw_measurements` is current |
-| Cat shows up as null | Weight outside any profile's `slop_g` | Tighten/widen `[[cats]]` in `config/sensors.toml`, restart warm |
+| Cat shows up as null | Weight outside every profile's `slop_g` — most often a growing cat that has drifted past his window | Check the unattributed weights (query below), re-centre `weight_g` in `config/cats.local.toml`, restart warm |
+| Cat shows up as null, logs say "Ambiguous weight" | Two profiles' windows overlap; ambiguous readings are deliberately left unattributed rather than misattributed | Shrink `slop_g` until the windows are disjoint, restart warm |
+| A cat silently stops appearing | Every dashboard query filters `cat IS NOT NULL`, so unattributed visits vanish from all charts instead of showing up as errors | Query unattributed events directly (below); consider it first whenever a cat "disappears" |
 | Acceptance test fails after change | Algorithm regression | Run `pytest tests/test_pipeline_acceptance.py`; compare to `tests/fixtures/expected_events.json` |
 
 ---
